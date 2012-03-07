@@ -204,4 +204,23 @@ e `eliminationOf` np
 
 
         -}
+
+        {-
+        emptyMatch l = Match { loc = l, players = [0,0], scores = Nothing}
+
+        makeWbRound k = map makeWbMatch [1..2^(p-k)] where
+          makeWbMatch i = emptyMatch $ Location { brac = Winners, rnd = k, offs = i } 
+
+        wbRest = map makeWbRound [3..p]
+
+        makeLbRound k = map makeLbMatch [1..(2^) $ p - 1 - (k+1) `div` 2] where
+          makeLbMatch i = emptyMatch $ Location { brac = Losers, rnd = k, offs = i }
+
+        gf1 = Location { brac = Losers, offs = 1, rnd = 2*p-1 }
+        gf2 = Location { brac = Losers, offs = 1, rnd = 2*p }
+        gfms = map emptyMatch [gf1, gf2]
+
+        lbRest = (map makeLbRound [3..2*p-2]) ++ gfms
+
+        -}
         in wbr1 ++ wbr2
