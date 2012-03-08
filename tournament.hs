@@ -22,7 +22,7 @@ module Tournament (
    , robin             -- :: Int -> [[(Int, Int)]]
 
    -- * Duel eliminationOf
-   , eliminationOf     -- :: Elimination -> PlayerCount -> [Match]
+   , eliminationOf     -- :: Elimination -> Int -> [Match]
 
 
    -- * TODO: what to do here?
@@ -61,7 +61,7 @@ seeds p i = (1 - last + 2^p, last) where
       0 -> 2^(p-k)
       _ -> let bstr = reverse $ showIntAtBase 2 intToDigit (i - 2*r) ""
                nr = fst $ readInt 2 (`elem` "01") digitToInt bstr !! 0
-          in 2^(p-k-1) + nr `shiftL` (p - length bstr)
+           in 2^(p-k-1) + nr `shiftL` (p - length bstr)
 
 
 -- | Check if the 3 criteria for perfect seeding holds for the current
@@ -106,28 +106,24 @@ robin n = map (filter notDummy . toPairs) rounds where
 -- -----------------------------------------------------------------------------
 -- Duel elimination
 
-type PlayerCount = Int
-
 data Bracket = Losers | Winners deriving (Show, Eq, Ord)
 
 
 -- Location fully determines the place of a match in a tournament
-type Round = Int
-type MatchNum = Int
 
 data Location = Location {
   brac :: Bracket
-, rnd  :: Round
-, num  :: MatchNum
+, rnd  :: Int
+, num  :: Int
 } deriving (Show, Eq)
 
-type Players = [PlayerCount]
-type Scores = Maybe [PlayerCount]
+--type Players = [Int]
+--type Scores = Maybe [Int]
 
 data Match = Match {
   locId   :: Location
-, scores  :: Maybe [PlayerCount]
-, players :: [PlayerCount]
+, scores  :: Maybe [Int]
+, players :: [Int]
 } deriving (Show, Eq)
 
 
@@ -136,52 +132,61 @@ data Elimination = Double | Single deriving (Show, Eq, Ord)
 
 -- | Create match shells for an elimination tournament
 -- hangles walkovers and leaves the tournament in a stable initial state
-eliminationOf :: Elimination -> PlayerCount -> [Match]
+eliminationOf :: Elimination -> Int -> [Match]
 e `eliminationOf` np
-  -- need 2 players for a tournament
-  | np < 2 = []
-  -- grand final rules fail if LB final is LBR1 (n=1) => GF in 2*n-1 == 1
-  | np == 2 && e == Double = []
-  -- 2 player Single elimination, a bit pointless, but that's how it looks
-  | np == 2 = let l = Location { brac = Winners, rnd = 1, num = 1 }
-    in [Match { locId = l, players = [1,2], scores = Nothing}]
+  -- Enforce >2 players for a tournament. It is possible to extend to 2, but:
+  -- 2 players Single <=> a best of 1 match
+  -- 2 players Double <=> a best of 3 match
+  -- and grand final rules fail if LB final is LBR1 (n=1) => GF in 2*n-1 == 1 ↯
+  | np <= 2 = error "Need >2 competitors for an elimination tournament"
+  
   -- else, a single/double elim with at least 2 WB rounds happening
   | otherwise =
     let p = (ceiling . logBase 2 . fromIntegral) np
         np' = 2^p
 
-        -- dummies map to WO markers
-        markWO (x, y) = map (\x -> if x <= np then x else -1) [x,y]
+        woResults Nothing = (0,0)
+        woResults (Just (x:y:[]))
+          | x == -1 = (y,x)
+          | y == -1 = (x,y)
+          | otherwise = (0,0)
 
-        -- woWinners is easy to compute in a duel
-        woWinners (x:y:[])
-          | x == -1 = Just [0, 1] -- top player lost
+        woWinner = fst . woResults 
+        woLoser = snd . woResults
+
+        -- scores resulting from WO is easy to compute in a duel
+        woScores (x:y:[])
+          | x == -1 = Just [0, 1] -- bottom player wom
           | y == -1 = Just [1, 0] -- top player won
           | otherwise = Nothing
 
         -- proceeding
         {-
-        need to check if scores is a Just
-        if it is, pipe it to winners?
+        fns needed:
+        WBR1: pairs to scores
+        WBR2: pairs to winner, pairs to scores
+        LBR1: pairs to loser, pairs to scores
+        LBR2: pairs to winner
         -}
 
 
         -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
-        makeWbR1 i = Match {locId = l, players = pl, scores = s} where
+        markWO (x, y) = map (\x -> if x <= np then x else -1) [x,y]
+        makeWbR1 i = Match { locId = l, players = pl, scores = s } where
           l = Location { brac = Winners, rnd = 1, num = i }
           pl = markWO $ seeds p i
-          s = woWinners pl
+          s = woScores pl
         wbr1 = map makeWbR1 [1..2^(p-1)]
 
         -- make WBR2 shells by using WBR1 results to propagate walkover winners
         makeWbR2 (r1m1, r1m2) = Match {locId = l, players = pl, scores = s} where
-        --makeWbR2 (r1m1, r1m2) = Match {b = Winners, r = 2, m = i, p = [po, pe]}
-          l = Location { brac = Winners, rnd = 2, num = r1m2.num `div` 2 }
+          l = Location { brac = Winners, rnd = 2, num = num (locId r1m2) `div` 2 }
+          pl = map woWinner [scores r1m1, scores r1m2]
 
-          po = r1m1 winner if exists else 0
-          pe = r1m2 winner if exists else 0
+          s = woScores pl
 
-        wbr2 = map makeWbR2 $ take 2^(p-2) $ zip wbr1 (tail wbr1)
+        makePairs xs = filter (odd . num . locId . fst) $ zip xs (tail xs)
+        wbr2 = map makeWbR2 $ take (2^(p-2)) $ take (2^(p-2)) $ makePairs wbr1
 
         {-
         -- any rounds after this point is not guaranteed to happen
@@ -206,7 +211,7 @@ e `eliminationOf` np
         -}
 
         {-
-        emptyMatch l = Match { loc = l, players = [0,0], scores = Nothing}
+        emptyMatch l = Match { locId = l, players = [0,0], scores = Nothing}
 
         makeWbRound k = map makeWbMatch [1..2^(p-k)] where
           makeWbMatch i = emptyMatch $ Location { brac = Winners, rnd = k, offs = i } 
