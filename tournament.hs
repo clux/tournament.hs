@@ -42,11 +42,11 @@ main = do
   print $ 15 `inGroupsOf` 5
   print $ 15 `inGroupsOf` 3
   print $ 16 `inGroupsOf` 4
-  print $ Single `eliminationOf` 8
 
+testor t n = mapM_ print (t `eliminationOf` n)
 
 -- -----------------------------------------------------------------------------
--- Duel Helpers
+-- Duel Helperstestor n = mapM_ print (Single `eliminationOf` n)
 -- Based on the theory from http://clux.org/entries/view/2407
 -- TODO should somehow ensure 0 < i <= 2^(p-1) in the next fn
 
@@ -126,9 +126,8 @@ data Match = Match {
 , players :: [Int]
 } deriving (Show, Eq)
 
-
-
 data Elimination = Double | Single deriving (Show, Eq, Ord)
+
 
 -- | Create match shells for an elimination tournament
 -- hangles walkovers and leaves the tournament in a stable initial state
@@ -137,22 +136,20 @@ e `eliminationOf` np
   -- Enforce >2 players for a tournament. It is possible to extend to 2, but:
   -- 2 players Single <=> a best of 1 match
   -- 2 players Double <=> a best of 3 match
-  -- and grand final rules fail if LB final is LBR1 (n=1) => GF in 2*n-1 == 1 ↯
+  -- and grand final rules fail when LB final is R1 (p=1) as GF is then 2*p-1 == 1 ↯
   | np <= 2 = error "Need >2 competitors for an elimination tournament"
-  
+
   -- else, a single/double elim with at least 2 WB rounds happening
   | otherwise =
     let p = (ceiling . logBase 2 . fromIntegral) np
         np' = 2^p
 
-        woResults Nothing = (0,0)
-        woResults (Just (x:y:[]))
-          | x == -1 = (y,x)
-          | y == -1 = (x,y)
-          | otherwise = (0,0)
+        woResults :: [Int] -> Maybe [Int] -> (Int, Int)
+        woResults _ Nothing = (0,0)
+        woResults (p1:p2:[]) (Just (s1:s2:[])) = if (s1 > s2) then (p1, p2) else (p2, p1)
 
-        woWinner = fst . woResults 
-        woLoser = snd . woResults
+        woWinner m = fst $ woResults (players m) (scores m)
+        woLoser m = snd $ woResults (players m) (scores m)
 
         -- scores resulting from WO is easy to compute in a duel
         woScores (x:y:[])
@@ -160,72 +157,81 @@ e `eliminationOf` np
           | y == -1 = Just [1, 0] -- top player won
           | otherwise = Nothing
 
-        -- proceeding
-        {-
-        fns needed:
-        WBR1: pairs to scores
-        WBR2: pairs to winner, pairs to scores
-        LBR1: pairs to loser, pairs to scores
-        LBR2: pairs to winner
-        -}
-
-
         -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
         markWO (x, y) = map (\x -> if x <= np then x else -1) [x,y]
         makeWbR1 i = Match { locId = l, players = pl, scores = s } where
           l = Location { brac = Winners, rnd = 1, num = i }
           pl = markWO $ seeds p i
           s = woScores pl
-        wbr1 = map makeWbR1 [1..2^(p-1)]
 
-        -- make WBR2 shells by using WBR1 results to propagate walkover winners
-        makeWbR2 (r1m1, r1m2) = Match {locId = l, players = pl, scores = s} where
+        -- make WBR2 shells by using paired WBR1 results to propagate walkover winners
+        makeWbR2 (r1m1, r1m2) = Match { locId = l, players = pl, scores = s } where
           l = Location { brac = Winners, rnd = 2, num = num (locId r1m2) `div` 2 }
-          pl = map woWinner [scores r1m1, scores r1m2]
-
+          pl = map woWinner [r1m1, r1m2]
           s = woScores pl
 
-        makePairs xs = filter (odd . num . locId . fst) $ zip xs (tail xs)
-        wbr2 = map makeWbR2 $ take (2^(p-2)) $ take (2^(p-2)) $ makePairs wbr1
-
-        {-
-        -- any rounds after this point is not guaranteed to happen
-
-
-        -- make LBR1 shells by using WBR1 results to propagate WO markers down
-        makeLbR1 (r1m1, r1m2) = Match {b = Losers, r = 1, m = i, p = [po, pe]}
-          where i = r1m2.m `div` 2
-                po = r1m1 loser
-                pe = r1m2 loser
+        -- make LBR1 shells by using paired WBR1 results to propagate WO markers down
+        makeLbR1 (r1m1, r1m2) = Match { locId = l, players = pl, scores = s } where
+          l = Location { brac = Losers, rnd = 1, num = num (locId r1m2) `div` 2}
+          pl = map woLoser [r1m1, r1m2]
+          s = woScores pl
 
         -- make LBR2 shells by using LBR1 results to propagate WO markers if 2x
-        makeLbR2 (r1m1, r1m2)
+        makeLbR2 lbm = Match { locId = l, players = pl, scores = Nothing } where
+          l = Location { brac = Losers, rnd = 2, num = num (locId lbm) }
+          plw = woWinner lbm
+          pl = if (odd . num . locId) lbm then [0, plw] else [plw, 0]
 
-        wbLoc = Location Winners
-        lbLoc = Location Losers
-
-        map ( . wbLoc r) [1..] -- result of outer gives a loc for round r
-        -- can then map location to match possibly if we also include other info..
-
-
-        -}
-
-        {-
+        -- make remaining matches empty shells
         emptyMatch l = Match { locId = l, players = [0,0], scores = Nothing}
 
         makeWbRound k = map makeWbMatch [1..2^(p-k)] where
-          makeWbMatch i = emptyMatch $ Location { brac = Winners, rnd = k, offs = i } 
-
-        wbRest = map makeWbRound [3..p]
+          makeWbMatch i = emptyMatch $ Location { brac = Winners, rnd = k, num = i }
 
         makeLbRound k = map makeLbMatch [1..(2^) $ p - 1 - (k+1) `div` 2] where
-          makeLbMatch i = emptyMatch $ Location { brac = Losers, rnd = k, offs = i }
+          makeLbMatch i = emptyMatch $ Location { brac = Losers, rnd = k, num = i }
 
-        gf1 = Location { brac = Losers, offs = 1, rnd = 2*p-1 }
-        gf2 = Location { brac = Losers, offs = 1, rnd = 2*p }
+        -- construct matches
+        wbr1 = map makeWbR1 [1..2^(p-1)]
+        wbr1pairs = filter (odd . num . locId . fst) $ zip wbr1 (tail wbr1)
+        wbr2 = map makeWbR2 $ take (2^(p-2)) wbr1pairs
+        lbr1 = map makeLbR1 $ take (2^(p-2)) wbr1pairs
+        lbr2 = map makeLbR2 lbr1
+        wbRest = concatMap makeWbRound [3..p]
+        lbRest = concatMap makeLbRound [3..2*p-2]
+
+        gf1 = Location { brac = Losers, num = 1, rnd = 2*p-1 }
+        gf2 = Location { brac = Losers, num = 1, rnd = 2*p }
         gfms = map emptyMatch [gf1, gf2]
 
-        lbRest = (map makeLbRound [3..2*p-2]) ++ gfms
+        wb = wbr1 ++ wbr2 ++ wbRest
+        lb = lbr1 ++ lbr2 ++ lbRest ++ gfms
+    in if e == Single then wb else wb ++ lb
 
-        -}
-        in wbr1 ++ wbr2
+-- | Create match shells for an FFA elimination tournament
+--ffaElimination :: Int -> Int -> [Match]
+ffaElimination gs adv np
+  -- Enforce >2 players, >2 players per match, and >1 group needed.
+  -- Not technically limiting, but: gs 2 <=> duel, 1 group <=> best of one.
+  | np <= 2 = error "Need >2 players for an FFA elimination"
+  | gs <= 2 = error "Need >2 players per match for an FFA elimination"
+  | np <= gs = error "Need >1 group for an FFA elimination"
+  | adv >= gs = error "Need to eliminate at least one player a match in FFA elimination"
+  | adv <= 0 = error "Need >0 players to advance per match in a FFA elimination"
+  | otherwise =
+  -- how many rounds do we need?
+    let r1 = np `inGroupsOf` gs
+    in  r1
+
+    --let p = (ceiling . logBase gs . fromIntegral) np -- np in [5..16] gives p == 2 and np' = 16
+        --np' = gs^p
+        -- i.e. this is useful only if ppm == 1. if ppm == 2 then we'd be left with 8 in r2, 4 in R3
+
+        --rose wine
+        --copparberg
+
+
+
+
+
+
