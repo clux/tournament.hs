@@ -18,11 +18,12 @@ module Tournament (
    , duelValid         -- :: Int -> (Int, Int) -> Bool
 
    -- * Group helpers
-   , inGroupsOf        -- :: Int -> Int -> [[Int]]
-   , robin             -- :: Int -> [[(Int, Int)]]
+   , inGroupsOf        -- :: Int -> Int -> [Group]
+   , robin             -- :: Int -> [RobinRound]
 
    -- * Duel eliminationOf
-   , eliminationOf     -- :: Elimination -> Int -> [Match]
+   , eliminationOf     -- :: Elimination -> Int -> Tournament
+   , scoreElimination  -- :: Tournament -> Match -> Tournament
 
 
    -- * TODO: what to do here?
@@ -74,28 +75,27 @@ duelValid n (a, b) = odd a && even b && a + b == 1 + 2^n
 
 -- -----------------------------------------------------------------------------
 -- Group helpers
-
+type Group = [Int]
 -- | Splits a numer of players into groups of as close to equal seeding sum
 -- as possible. When groupsize is even and s | n, the seed sum is constant.
-inGroupsOf :: Int -> Int -> [[Int]]
+inGroupsOf :: Int -> Int -> [Group]
 0 `inGroupsOf` _ = []
 n `inGroupsOf` s = map (sort . filter (<=n) . makeGroup) [1..ngrps] where
   ngrps = ceiling $ fromIntegral n / fromIntegral s
   s' = s - head (filter (\x -> n > ngrps*(s-1-x)) [0..]) -- reduce s if unfillable
   n' = ngrps*s' -- n if filled groups != n (10 inGroupsOf 4 uses n' = 12)
-  nppg = s' `div` 2 -- num pair per group
-  np = nppg * ngrps  -- total num pairs
-  ps = take np $ zip [1..] [n', n'-1..] -- all the pairs
-  rem = [np+1, np+2 .. n'-np] -- e in [1..n'] \\ ps
-  makeGroup i = concatMap (\(x,y) -> [x,y]) pairs ++ left where
-    pairs = filter ((`elem` [i, i+ngrps .. i+np]) . fst) ps
-    left = if length rem >= i then [rem !! (i-1)] else []
+  npairs = (s' `div` 2) * ngrps
+  pairs = zip [1..npairs] [n', n'-1..]
+  rem = [npairs+1, npairs+2 .. n'-npairs] -- [1..n'] \\ e in pairs
+  makeGroup i = leftover ++ concatMap (\(x,y) -> [x,y]) gpairs where
+    gpairs = filter ((`elem` [i, i+ngrps .. i+npairs]) . fst) pairs
+    leftover = take 1 $ drop (i-1) rem
 
-
+type RobinRound = [(Int, Int)]
 -- | Round robin schedules a list of n players and returns
 -- a list of rounds (where a round is a list of pairs). Uses
 -- http://en.wikipedia.org/wiki/Round-robin_tournament#Scheduling_algorithm
-robin :: Int -> [[(Int, Int)]]
+robin :: Int -> [RobinRound]
 robin n = map (filter notDummy . toPairs) rounds where
   n' = if odd n then n+1 else n
   m = n' `div` 2 -- matches per round
@@ -123,11 +123,11 @@ data Match = Match {
 } deriving (Show, Eq)
 
 data Elimination = Double | Single deriving (Show, Eq, Ord)
-
+type Tournament = [Match]
 
 -- | Create match shells for an elimination tournament
 -- hangles walkovers and leaves the tournament in a stable initial state
-eliminationOf :: Elimination -> Int -> [Match]
+eliminationOf :: Elimination -> Int -> Tournament
 e `eliminationOf` np
   -- Enforce >2 players for a tournament. It is possible to extend to 2, but:
   -- 2 players Single <=> a best of 1 match
@@ -204,6 +204,31 @@ e `eliminationOf` np
         lb = lbr1 ++ lbr2 ++ lbRest ++ gfms
     in if e == Single then wb else wb ++ lb
 
+-- | Update an Elimination tournament by passing in a scored match
+-- returns an updated tournament with the winner propagated to the next round,
+-- and the loser propagated to the loser bracket if applicable.
+scoreElimination :: Tournament -> Match -> Tournament
+scoreElimination t m = 
+  let e = if null $ filter ((== Losers) . brac . locId) t then Single else Double
+      l = locId m
+      mo = head $ filter ((== l) . locId) t
+  in t
+
+
+-- | Checks if a Tournament is valid
+{-
+tournamentValid :: Tournament -> Bool
+tournamentValid t =
+  let (wb, lb) = partition ((== Winners) . brac . locId) r
+      roundRightWb k = rightSize && uniquePlayers where
+        rightSize = 2^(p-k) == length $ filter ((== k) . rnd . locId) wb
+        uniquePlayers = 
+      rountRightLb k = rightSize && uniquePlayers where
+        rightSize = 2^(p - 1 - (k+1) `div` 2) == length $ filter ((== k) . rnd . locId) lb
+
+  in all $ map roundRightWb [1..2^p]
+-}
+
 -- | Create match shells for an FFA elimination tournament
 --ffaElimination :: Int -> Int -> [Match]
 ffaElimination gs adv np
@@ -215,35 +240,16 @@ ffaElimination gs adv np
   | adv >= gs = error "Need to eliminate at least one player a match in FFA elimination"
   | adv <= 0 = error "Need >0 players to advance per match in a FFA elimination"
   | otherwise =
-  -- how many rounds do we need?
-    let r1g = np `inGroupsOf` gs
-        r1Match g i = Match { locId = l, players = g, scores = Nothing }
-          where l = Location { brac = Winners, rnd = 1, num = i }
-        r1 = zipWith toMatch r1g [1..length r1g]
-
-        emptyMatch r i  = Match { locId = l, players = take gs (repeat 0), scores = Nothing }
+    let first = np `inGroupsOf` gs
+        makeMatch r g i = Match { locId = l, players = g, scores = Nothing }
           where l = Location { brac = Winners, rnd = r, num = i }
+        second = zipWith (makeMatch 1) first [1..]
 
-        --can probably scanl with inGroupsOf
-        --what do i actually want to do? if 15np with 3gs, kill 2 => 6 left => 2x3
-        --then killing 2 from those work out fine as 1 left in final
-        --probably need what the group size is going to be in here, so need to detangle from inGroupsOf
-        --12inGroupsOf3 kill 1 => 8 left .. bad
-        --force some power rule for this? otherwise it cna get a bit messy..
-        --but then it can also get fantastic with some custom setups with different sizes..
-        --maybe specify num players you have, and group size you want, then upgrade to a model that works perfectly..
+        nextGroup g = left `inGroupsOf` gs where
+          left = adv * length g
 
-    in  r1
+        final = [gs `inGroupsOf` gs]
+        gps = takeWhile ((>1) . length) $ iterate nextGroup first
+        allGps = gps ++ final
 
-    --let p = (ceiling . logBase gs . fromIntegral) np -- np in [5..16] gives p == 2 and np' = 16
-        --np' = gs^p
-        -- i.e. this is useful only if ppm == 1. if ppm == 2 then we'd be left with 8 in r2, 4 in R3
-
-        --rose wine
-        --copparberg
-
-
-
-
-
-
+    in allGps
