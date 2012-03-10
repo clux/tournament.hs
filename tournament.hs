@@ -37,6 +37,7 @@ import Data.Bits (shiftL)
 
 
 
+
 main = do
   print $ seeds 3 4
   print $ 15 `inGroupsOf` 5
@@ -108,17 +109,12 @@ robin n = map (filter notDummy . toPairs) rounds where
 
 data Bracket = Losers | Winners deriving (Show, Eq, Ord)
 
-
 -- Location fully determines the place of a match in a tournament
-
 data Location = Location {
   brac :: Bracket
 , rnd  :: Int
 , num  :: Int
 } deriving (Show, Eq)
-
---type Players = [Int]
---type Scores = Maybe [Int]
 
 data Match = Match {
   locId   :: Location
@@ -212,7 +208,7 @@ e `eliminationOf` np
 --ffaElimination :: Int -> Int -> [Match]
 ffaElimination gs adv np
   -- Enforce >2 players, >2 players per match, and >1 group needed.
-  -- Not technically limiting, but: gs 2 <=> duel, 1 group <=> best of one.
+  -- Not technically limiting, but: gs 2 <=> duel and 1 group <=> best of one.
   | np <= 2 = error "Need >2 players for an FFA elimination"
   | gs <= 2 = error "Need >2 players per match for an FFA elimination"
   | np <= gs = error "Need >1 group for an FFA elimination"
@@ -220,7 +216,23 @@ ffaElimination gs adv np
   | adv <= 0 = error "Need >0 players to advance per match in a FFA elimination"
   | otherwise =
   -- how many rounds do we need?
-    let r1 = np `inGroupsOf` gs
+    let r1g = np `inGroupsOf` gs
+        r1Match g i = Match { locId = l, players = g, scores = Nothing }
+          where l = Location { brac = Winners, rnd = 1, num = i }
+        r1 = zipWith toMatch r1g [1..length r1g]
+
+        emptyMatch r i  = Match { locId = l, players = take gs (repeat 0), scores = Nothing }
+          where l = Location { brac = Winners, rnd = r, num = i }
+
+        --can probably scanl with inGroupsOf
+        --what do i actually want to do? if 15np with 3gs, kill 2 => 6 left => 2x3
+        --then killing 2 from those work out fine as 1 left in final
+        --probably need what the group size is going to be in here, so need to detangle from inGroupsOf
+        --12inGroupsOf3 kill 1 => 8 left .. bad
+        --force some power rule for this? otherwise it cna get a bit messy..
+        --but then it can also get fantastic with some custom setups with different sizes..
+        --maybe specify num players you have, and group size you want, then upgrade to a model that works perfectly..
+
     in  r1
 
     --let p = (ceiling . logBase gs . fromIntegral) np -- np in [5..16] gives p == 2 and np' = 16
