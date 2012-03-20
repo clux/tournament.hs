@@ -33,7 +33,7 @@ module Tournament (
 
 import Data.Char (intToDigit, digitToInt)
 import Numeric (showIntAtBase, readInt)
-import Data.List (sort, splitAt)
+import Data.List (sort, splitAt, genericLength, partition)
 import Data.Bits (shiftL)
 
 
@@ -78,7 +78,7 @@ duelValid n (a, b) = odd a && even b && a + b == 1 + 2^n
 type Group = [Int]
 -- | Splits a numer of players into groups of as close to equal seeding sum
 -- as possible. When groupsize is even and s | n, the seed sum is constant.
-inGroupsOf :: Int -> Int -> [Group]
+inGroupsOf :: Int -> Int -> [[Int]]
 0 `inGroupsOf` _ = []
 n `inGroupsOf` s = map (sort . filter (<=n) . makeGroup) [1..ngrps] where
   ngrps = ceiling $ fromIntegral n / fromIntegral s
@@ -208,10 +208,18 @@ e `eliminationOf` np
 -- returns an updated tournament with the winner propagated to the next round,
 -- and the loser propagated to the loser bracket if applicable.
 scoreElimination :: Tournament -> Match -> Tournament
-scoreElimination t m = 
+scoreElimination t m =
   let e = if null $ filter ((== Losers) . brac . locId) t then Single else Double
       l = locId m
       mo = head $ filter ((== l) . locId) t
+      {-
+      STATEGY:
+      for all rounds before in this bracket: copy from t
+      for current round: get current round from t, partition it around l and concat
+      for next round: need to do similar except need to splice in at the proceeding position (but it should preserve existing player so cant remake it)
+      for lb round:..
+
+      -}
   in t
 
 
@@ -222,15 +230,17 @@ tournamentValid t =
   let (wb, lb) = partition ((== Winners) . brac . locId) r
       roundRightWb k = rightSize && uniquePlayers where
         rightSize = 2^(p-k) == length $ filter ((== k) . rnd . locId) wb
-        uniquePlayers = 
+        uniquePlayers =
       rountRightLb k = rightSize && uniquePlayers where
         rightSize = 2^(p - 1 - (k+1) `div` 2) == length $ filter ((== k) . rnd . locId) lb
 
   in all $ map roundRightWb [1..2^p]
 -}
 
--- | Create match shells for an FFA elimination tournament
---ffaElimination :: Int -> Int -> [Match]
+-- | Create match shells for an FFA elimination tournament.
+-- Result comes pre-filled in with either top advancers or advancers `intersect` seedList.
+-- This means what the player numbers represent is only fixed per round.
+ffaElimination :: Int -> Int -> Int -> Tournament
 ffaElimination gs adv np
   -- Enforce >2 players, >2 players per match, and >1 group needed.
   -- Not technically limiting, but: gs 2 <=> duel and 1 group <=> best of one.
@@ -240,16 +250,21 @@ ffaElimination gs adv np
   | adv >= gs = error "Need to eliminate at least one player a match in FFA elimination"
   | adv <= 0 = error "Need >0 players to advance per match in a FFA elimination"
   | otherwise =
-    let first = np `inGroupsOf` gs
-        makeMatch r g i = Match { locId = l, players = g, scores = Nothing }
-          where l = Location { brac = Winners, rnd = r, num = i }
-        second = zipWith (makeMatch 1) first [1..]
+    let minsize g = foldr min gs $ map length g
 
-        nextGroup g = left `inGroupsOf` gs where
-          left = adv * length g
+        nextGroup g = leftover `inGroupsOf` gs where
+          adv' = adv - (gs - (minsize g)) -- force zero non-eliminating matches
+          adv'' = max adv' 1 -- but not if we only left 1 ^^ should still hold
+          leftover = length g * adv''
 
-        final = [gs `inGroupsOf` gs]
-        gps = takeWhile ((>1) . length) $ iterate nextGroup first
-        allGps = gps ++ final
+        gps = takeWhile ((>1) . length) $ iterate nextGroup $ np `inGroupsOf` gs
+        allGps = gps ++ [nextGroup (last gps)]
 
-    in allGps
+        -- finally convert raw group lists to matches
+        makeRound gs r = zipWith makeMatch gs [1..] where
+          makeMatch g i = Match { locId = l, players = g, scores = Nothing } where
+            l = Location { brac = Winners, rnd = r, num = i }
+
+    in concat $ zipWith makeRound allGps [1..]
+
+ffa gs adv np = mapM_ print (ffaElimination gs adv np)
