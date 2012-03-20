@@ -1,0 +1,25 @@
+Name          : Tournament
+Version       : 0.0.1
+Synopsis      : Tournament related algorithms
+Homepage      : http://github.com/clux/tournament.hs
+License       : GPL
+License-File  : LICENSE
+Author        : clux
+Maintainer    : analsandblaster@gmail.com
+Category      : Data
+Cabal-version : >= 1.2
+Build-type    : Simple
+Stability     : Alpha
+Bug-reports   : http://github.com/clux/tournament.hs/issues
+Package-url   : ? http://github.com/clux/tournament.hs
+
+
+Extra-source-files:
+  Readme.md
+
+library
+  build-depends   :
+    base >= 2,
+    bar
+  exposed-modules : Tournament
+  ghc-options     : -Wall
