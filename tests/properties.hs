@@ -4,7 +4,7 @@ module Main where
 
 import qualified Tournament as T
 import Test.QuickCheck (quickCheck)
-import Data.List ((\\))
+import Data.List ((\\), nub)
 
 -- -----------------------------------------------------------------------------
 -- inGroupsOf
@@ -49,20 +49,23 @@ robinProp1 n = n >= 2 ==>
 -- each round contains the correct number of matches
 robinProp2 :: Int -> Property
 robinProp2 n = n >= 2 ==>
-  let rs = robin n in all (== n `div` 2) map length rs
+  let rs = robin n in all (== n `div` 2) $ map length rs
 
 -- a player is uniquely listed in each round
 robinProp3 :: Int -> Property
 robinProp3 n = n >= 2 ==>
   let rs = robin n
-      --TODO
+      plrs = map (concatMap (\(x,y) -> [x,y])) rs
+  in map nub plrs == plrs
 
 
 -- a player is playing all opponents [hence all exactly once by 3]
 robinProp4 :: Int -> Property
 robinProp4 n = n >= 2 ==>
   let rs = robin n
-    --TODO
+      player k = map (\(x,y) -> if x == k then y else x) $ -- reduce down to the list of combatants of k
+        concatMap (filter (\(x,y) -> x == k || y == k)) rs -- all pairs across all rounds containing k
+  in all (\i -> [1..n] \\ player i == [i]) [1..n] -- all players play all combatants except self
 
 
 -- -----------------------------------------------------------------------------

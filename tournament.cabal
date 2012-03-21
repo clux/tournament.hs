@@ -4,12 +4,13 @@ Synopsis      : Tournament related algorithms
 Homepage      : http://github.com/clux/tournament.hs
 Description   :
 
-  Tournament is a pure library which generates tournaments, groups 
+  Tournament is a pure library which generates tournaments, groups
   and rounds of various forms using a variety of different possible rules.
 
 License       : GPL-3
 License-file  : LICENSE
 Author        : Eirik <clux> Albrigtsen
+Copyright     : 2012, Eirik Albrigtsen
 Maintainer    : analsandblaster@gmail.com
 Category      : Game
 Bug-reports   : http://github.com/clux/tournament.hs/issues
@@ -23,6 +24,10 @@ Extra-source-files:
   Readme.md
   tests/Property.hs
 --------------------------------------------------------------------------------
+Flag tests
+  Description: Build and install the test executable
+  Default: False
+  Manual: True
 
 library
   hs-source-dirs  : src
