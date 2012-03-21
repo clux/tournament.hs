@@ -1,3 +1,7 @@
+-- | Tests for the 'Tournament' module.
+
+module Main where
+
 import qualified Tournament as T
 import Test.QuickCheck (quickCheck)
 import Data.List ((\\))
@@ -63,3 +67,9 @@ robinProp4 n = n >= 2 ==>
 
 -- -----------------------------------------------------------------------------
 -- eliminationOf
+
+-- -----------------------------------------------------------------------------
+-- Test harness
+
+main :: IO ()
+main = tests

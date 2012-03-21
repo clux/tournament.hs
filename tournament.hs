@@ -1,16 +1,3 @@
------------------------------------------------------------------------------
---
--- Module      :  Tournament
--- Copyright   :  (c) clux 2012
--- License     :  GPL
---
--- Maintainer  :  clux
--- Stability   :  unstable
--- Portability :  unknown
---
--- Tournament related algorithms
---
------------------------------------------------------------------------------
 module Tournament (
    -- * Duel helpers
 
