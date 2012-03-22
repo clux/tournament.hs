@@ -1,4 +1,4 @@
-module Tournament (
+module Game.Tournament (
    -- * Duel helpers
 
      seeds             -- :: Int -> Int -> (Int, Int)
@@ -14,25 +14,25 @@ module Tournament (
 
 
    -- * TODO: what to do here?
-   , main
+   --, main
 
 ) where
 
 import Data.Char (intToDigit, digitToInt)
 import Numeric (showIntAtBase, readInt)
-import Data.List (sort, splitAt, genericLength, partition)
+import Data.List (sort, genericLength, partition)
 import Data.Bits (shiftL)
 
 
 
-
+{-
 main = do
   print $ seeds 3 4
   print $ 15 `inGroupsOf` 5
   print $ 15 `inGroupsOf` 3
   print $ 16 `inGroupsOf` 4
-
-testor t n = mapM_ print (t `eliminationOf` n)
+-}
+--testor t n = mapM_ print (t `eliminationOf` n)
 
 -- -----------------------------------------------------------------------------
 -- Duel Helperstestor n = mapM_ print (Single `eliminationOf` n)
@@ -44,8 +44,8 @@ testor t n = mapM_ print (t `eliminationOf` n)
 -- and the second, i, is the match number.
 -- Well-defined for n > 0 and 0 < i <= 2^(p-1)
 seeds :: Int -> Int -> (Int, Int)
-seeds p i = (1 - last + 2^p, last) where
-  last = let (k, r) = ((floor . logBase 2 . fromIntegral) i, i - 2^k) in
+seeds p i = (1 - lastSeed + 2^p, lastSeed) where
+  lastSeed = let (k, r) = ((floor . logBase 2 . fromIntegral) i, i - 2^k) in
     case r of
       0 -> 2^(p-k)
       _ -> let bstr = reverse $ showIntAtBase 2 intToDigit (i - 2*r) ""
@@ -125,8 +125,6 @@ e `eliminationOf` np
   -- else, a single/double elim with at least 2 WB rounds happening
   | otherwise =
     let p = (ceiling . logBase 2 . fromIntegral) np
-        np' = 2^p
-
         woResults :: [Int] -> Maybe [Int] -> (Int, Int)
         woResults _ Nothing = (0,0)
         woResults (p1:p2:[]) (Just (s1:s2:[])) = if (s1 > s2) then (p1, p2) else (p2, p1)
@@ -254,4 +252,4 @@ ffaElimination gs adv np
 
     in concat $ zipWith makeRound allGps [1..]
 
-ffa gs adv np = mapM_ print (ffaElimination gs adv np)
+--ffa gs adv np = mapM_ print (ffaElimination gs adv np)

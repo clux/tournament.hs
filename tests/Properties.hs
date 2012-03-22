@@ -2,8 +2,8 @@
 
 module Main where
 
-import qualified Tournament as T
-import Test.QuickCheck (quickCheck)
+import qualified Game.Tournament as T
+import Test.QuickCheck (quickCheck, (==>), Property)
 import Data.List ((\\), nub)
 
 -- -----------------------------------------------------------------------------
@@ -19,7 +19,7 @@ groupsProp1 n s = n >= 0 && s >= 0 ==>
 groupsProp2 :: Int -> Int -> Property
 groupsProp2 n s = n >= 0 && s >= 0 ==>
   let pls = concat $ n `T.inGroupsOf` s
-  in length pls == n && null $ pls \\ [1..n]
+  in length pls == n && null (pls \\ [1..n])
 
 -- sum of seeds of groups in full groups differ by at most num_groups
 groupsProp3 :: Int -> Int -> Property
@@ -44,17 +44,17 @@ groupsProp4 n s = n >= 0 && s >= 0 && n `mod` s == 0 && even (n `div` s) ==>
 -- correct number of rounds
 robinProp1 :: Int -> Property
 robinProp1 n = n >= 2 ==>
-  let rs = robin n in length rs == (if odd n then n else n-1)
+  let rs = T.robin n in length rs == (if odd n then n else n-1)
 
 -- each round contains the correct number of matches
 robinProp2 :: Int -> Property
 robinProp2 n = n >= 2 ==>
-  let rs = robin n in all (== n `div` 2) $ map length rs
+  let rs = T.robin n in all (== n `div` 2) $ map length rs
 
 -- a player is uniquely listed in each round
 robinProp3 :: Int -> Property
 robinProp3 n = n >= 2 ==>
-  let rs = robin n
+  let rs = T.robin n
       plrs = map (concatMap (\(x,y) -> [x,y])) rs
   in map nub plrs == plrs
 
@@ -62,7 +62,7 @@ robinProp3 n = n >= 2 ==>
 -- a player is playing all opponents [hence all exactly once by 3]
 robinProp4 :: Int -> Property
 robinProp4 n = n >= 2 ==>
-  let rs = robin n
+  let rs = T.robin n
       player k = map (\(x,y) -> if x == k then y else x) $ -- reduce down to the list of combatants of k
         concatMap (filter (\(x,y) -> x == k || y == k)) rs -- all pairs across all rounds containing k
   in all (\i -> [1..n] \\ player i == [i]) [1..n] -- all players play all combatants except self
@@ -75,4 +75,4 @@ robinProp4 n = n >= 2 ==>
 -- Test harness
 
 main :: IO ()
-main = tests
+main = undefined
