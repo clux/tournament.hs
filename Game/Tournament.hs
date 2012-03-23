@@ -50,7 +50,7 @@ seeds p i = (1 - lastSeed + 2^p, lastSeed) where
     case r of
       0 -> 2^(p-k)
       _ -> let bstr = reverse $ showIntAtBase 2 intToDigit (i - 2*r) ""
-               nr = fst $ readInt 2 (`elem` "01") digitToInt bstr !! 0
+               nr = fst $ head $ readInt 2 (`elem` "01") digitToInt bstr
            in 2^(p-k-1) + nr `shiftL` (p - length bstr)
 
 -- | Check if the 3 criteria for perfect seeding holds for the current
@@ -90,7 +90,7 @@ robin n = map (filter notDummy . toPairs) rounds where
 
 robinPermute :: [Int] -> [Int]
 robinPermute [] = []
-robinPermute (x:xs) = x : (last xs) : (init xs)
+robinPermute (x:xs) = x : last xs : init xs
 
 type RobinRound = [(Int, Int)]
 -- -----------------------------------------------------------------------------
@@ -181,10 +181,10 @@ duelElimination etype np
         emptyMatch l = Match { locId = l, players = [0,0], scores = Nothing}
 
         makeWbRound k = map makeWbMatch [1..2^(p-k)] where
-          makeWbMatch i = emptyMatch $ Location { brac = Winners, rnd = k, num = i }
+          makeWbMatch i = emptyMatch Location{brac = Winners, rnd = k, num = i}
 
         makeLbRound k = map makeLbMatch [1..(2^) $ p - 1 - (k+1) `div` 2] where
-          makeLbMatch i = emptyMatch $ Location { brac = Losers, rnd = k, num = i }
+          makeLbMatch i = emptyMatch Location{brac = Losers, rnd = k, num = i}
 
         -- construct matches
         wbr1 = map makeWbR1 [1..2^(p-1)]
@@ -208,7 +208,7 @@ duelElimination etype np
 -- and the loser propagated to the loser bracket if applicable.
 scoreElimination :: Tournament -> Match -> Tournament
 scoreElimination t m =
-  let e = if null $ filter ((== Losers) . brac . locId) t then Single else Double
+  let e = if not $ any ((== Losers) . brac . locId) t then Single else Double
       l = locId m
       mo = head $ filter ((== l) . locId) t
       {-
@@ -250,10 +250,10 @@ ffaElimination gs adv np
   | adv >= gs = error "Need to eliminate at least one player a match in FFA elimination"
   | adv <= 0 = error "Need >0 players to advance per match in a FFA elimination"
   | otherwise =
-    let minsize g = foldr min gs $ map length g
+    let minsize g = minimum $ map length g
 
         nextGroup g = leftover `inGroupsOf` gs where
-          adv' = adv - (gs - (minsize g)) -- force zero non-eliminating matches
+          adv' = adv - (gs - minsize g) -- force zero non-eliminating matches
           adv'' = max adv' 1 -- but not if we only left 1 ^^ should still hold
           leftover = length g * adv''
 
