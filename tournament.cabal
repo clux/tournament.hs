@@ -5,7 +5,7 @@ Homepage      : http://github.com/clux/tournament.hs
 Description   :
 
   Tournament is a pure library which generates tournaments, groups
-  and rounds of various forms using a variety of different possible rules.
+  and rounds of various forms using a variety of different rulesets.
 
 License       : GPL-3
 License-file  : LICENSE
@@ -29,7 +29,7 @@ library
   hs-source-dirs  : .
   exposed-modules : Game.Tournament
   build-depends   : base    >= 4 && < 5
-  ghc-options     : -Wall
+  ghc-options     : -W
 
 -------------------------------------------------------------------------------
 executable tournament-test
@@ -38,4 +38,4 @@ executable tournament-test
   build-depends   :
         base        >= 4.0 && < 5.0
       , QuickCheck  == 2.4.*
-  ghc-options     : -Wall
+  ghc-options     : -W

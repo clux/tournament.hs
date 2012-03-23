@@ -9,10 +9,11 @@ module Game.Tournament (
    , robin             -- :: Int -> [RobinRound]
 
    -- * Duel eliminationOf
-   , eliminationOf     -- :: Elimination -> Int -> Tournament
+   , duelElimination   -- :: Elimination -> Int -> Tournament
    , scoreElimination  -- :: Tournament -> Match -> Tournament
 
-
+   -- * FFA Elimination
+   , ffaElimination    -- :: Int -> Int -> Int -> Tournament
    -- * TODO: what to do here?
    --, main
 
@@ -20,8 +21,10 @@ module Game.Tournament (
 
 import Data.Char (intToDigit, digitToInt)
 import Numeric (showIntAtBase, readInt)
-import Data.List (sort, genericLength, partition)
+import Data.List (sort, sortBy)
+import Data.Ord (comparing)
 import Data.Bits (shiftL)
+import Data.Maybe (fromJust)
 
 
 
@@ -32,7 +35,7 @@ main = do
   print $ 15 `inGroupsOf` 3
   print $ 16 `inGroupsOf` 4
 -}
---testor t n = mapM_ print (t `eliminationOf` n)
+testor t n = mapM_ print (duelElimination t n)
 
 -- -----------------------------------------------------------------------------
 -- Duel Helperstestor n = mapM_ print (Single `eliminationOf` n)
@@ -52,17 +55,15 @@ seeds p i = (1 - lastSeed + 2^p, lastSeed) where
                nr = fst $ readInt 2 (`elem` "01") digitToInt bstr !! 0
            in 2^(p-k-1) + nr `shiftL` (p - length bstr)
 
-
 -- | Check if the 3 criteria for perfect seeding holds for the current
 -- power and seed pair arguments.
 -- This can be used to make a measure of how good the seeding was in retrospect
 duelValid :: Int -> (Int, Int) -> Bool
 duelValid n (a, b) = odd a && even b && a + b == 1 + 2^n
 
-
 -- -----------------------------------------------------------------------------
 -- Group helpers
-type Group = [Int]
+--type Group = [Int]
 -- | Splits a numer of players into groups of as close to equal seeding sum
 -- as possible. When groupsize is even and s | n, the seed sum is constant.
 inGroupsOf :: Int -> Int -> [[Int]]
@@ -73,12 +74,11 @@ n `inGroupsOf` s = map (sort . filter (<=n) . makeGroup) [1..ngrps] where
   n' = ngrps*s' -- n if filled groups != n (10 inGroupsOf 4 uses n' = 12)
   npairs = (s' `div` 2) * ngrps
   pairs = zip [1..npairs] [n', n'-1..]
-  rem = [npairs+1, npairs+2 .. n'-npairs] -- [1..n'] \\ e in pairs
+  leftovers = [npairs+1, npairs+2 .. n'-npairs] -- [1..n'] \\ e in pairs
   makeGroup i = leftover ++ concatMap (\(x,y) -> [x,y]) gpairs where
     gpairs = filter ((`elem` [i, i+ngrps .. i+npairs]) . fst) pairs
-    leftover = take 1 $ drop (i-1) rem
+    leftover = take 1 $ drop (i-1) leftovers
 
-type RobinRound = [(Int, Int)]
 -- | Round robin schedules a list of n players and returns
 -- a list of rounds (where a round is a list of pairs). Uses
 -- http://en.wikipedia.org/wiki/Round-robin_tournament#Scheduling_algorithm
@@ -86,36 +86,57 @@ robin :: Int -> [RobinRound]
 robin n = map (filter notDummy . toPairs) rounds where
   n' = if odd n then n+1 else n
   m = n' `div` 2 -- matches per round
-  permute (x:xs) = x : (last xs) : (init xs)
-  rounds = take (n'-1) $ iterate permute [1..n']
+  rounds = take (n'-1) $ iterate robinPermute [1..n']
   notDummy (x,y) = all (<=n) [x,y]
   toPairs x =  take m $ zip x (reverse x)
 
+robinPermute :: [Int] -> [Int]
+robinPermute [] = []
+robinPermute (x:xs) = x : (last xs) : (init xs)
+
+type RobinRound = [(Int, Int)]
 -- -----------------------------------------------------------------------------
 -- Duel elimination
 
 data Bracket = Losers | Winners deriving (Show, Eq, Ord)
 
 -- Location fully determines the place of a match in a tournament
+
 data Location = Location {
   brac :: Bracket
 , rnd  :: Int
 , num  :: Int
 } deriving (Show, Eq)
+--TODO: if we use Data.HashMap for this we need Location in Ord, probably premature opt. though..
+--data Location = Location Bracket Int Int deriving (Show, Eq) -- better for a key value?
 
 data Match = Match {
   locId   :: Location
 , scores  :: Maybe [Int]
 , players :: [Int]
 } deriving (Show, Eq)
+{-
+data Match = Match {
+  players :: [Int]
+, scores  :: Maybe [Int]
+}
+data Tournament = Data.Map.Map Location Match
+-}
 
 data Elimination = Double | Single deriving (Show, Eq, Ord)
 type Tournament = [Match]
 
+
+--matchResults :: Match -> [Int] <- would be nicer
+--matchResults
+matchResults :: [Int] -> Maybe [Int] -> [Int]
+matchResults _ Nothing = repeat 0
+matchResults pls (Just scrs) = map fst $ reverse $ sortBy (comparing snd) $ zip pls scrs
+
 -- | Create match shells for an elimination tournament
 -- hangles walkovers and leaves the tournament in a stable initial state
-eliminationOf :: Elimination -> Int -> Tournament
-e `eliminationOf` np
+duelElimination :: Elimination -> Int -> Tournament
+duelElimination etype np
   -- Enforce >2 players for a tournament. It is possible to extend to 2, but:
   -- 2 players Single <=> a best of 1 match
   -- 2 players Double <=> a best of 3 match
@@ -125,21 +146,16 @@ e `eliminationOf` np
   -- else, a single/double elim with at least 2 WB rounds happening
   | otherwise =
     let p = (ceiling . logBase 2 . fromIntegral) np
-        woResults :: [Int] -> Maybe [Int] -> (Int, Int)
-        woResults _ Nothing = (0,0)
-        woResults (p1:p2:[]) (Just (s1:s2:[])) = if (s1 > s2) then (p1, p2) else (p2, p1)
+        woWinner m = head $ matchResults (players m) (scores m)
+        woLoser m = last $ take 2 $ matchResults (players m) (scores m)
 
-        woWinner m = fst $ woResults (players m) (scores m)
-        woLoser m = snd $ woResults (players m) (scores m)
-
-        -- scores resulting from WO is easy to compute in a duel
-        woScores (x:y:[])
-          | x == -1 = Just [0, 1] -- bottom player wom
-          | y == -1 = Just [1, 0] -- top player won
-          | otherwise = Nothing
+        woScores ps
+          |  0 `elem` ps = Nothing
+          | -1 `elem` ps = Just $ map (\x -> if x == -1 then 0 else 1) ps
+          | otherwise     = Nothing
 
         -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
-        markWO (x, y) = map (\x -> if x <= np then x else -1) [x,y]
+        markWO (x, y) = map (\a -> if a <= np then a else -1) [x,y]
         makeWbR1 i = Match { locId = l, players = pl, scores = s } where
           l = Location { brac = Winners, rnd = 1, num = i }
           pl = markWO $ seeds p i
@@ -148,7 +164,7 @@ e `eliminationOf` np
         -- make WBR2 shells by using paired WBR1 results to propagate walkover winners
         makeWbR2 (r1m1, r1m2) = Match { locId = l, players = pl, scores = s } where
           l = Location { brac = Winners, rnd = 2, num = num (locId r1m2) `div` 2 }
-          pl = map woWinner [r1m1, r1m2]
+          pl = map woWinner [r1m1, r1m2] -- [1, 0]
           s = woScores pl
 
         -- make LBR1 shells by using paired WBR1 results to propagate WO markers down
@@ -187,7 +203,7 @@ e `eliminationOf` np
 
         wb = wbr1 ++ wbr2 ++ wbRest
         lb = lbr1 ++ lbr2 ++ lbRest ++ gfms
-    in if e == Single then wb else wb ++ lb
+    in if etype == Single then wb else wb ++ lb
 
 -- | Update an Elimination tournament by passing in a scored match
 -- returns an updated tournament with the winner propagated to the next round,
@@ -199,11 +215,12 @@ scoreElimination t m =
       mo = head $ filter ((== l) . locId) t
       {-
       STATEGY:
-      for all rounds before in this bracket: copy from t
-      for current round: get current round from t, partition it around l and concat
-      for next round: need to do similar except need to splice in at the proceeding position (but it should preserve existing player so cant remake it)
-      for lb round:..
-
+      change Tournament to be of type Data.Map Location Match -where Match removes Location
+      update given (Location, Match) pair in Tournament
+      clone imperative algorithm:
+      (num loc + 1) `div` 2 => next num, rnd+=1 for winners
+      get matching number in LB, eww. then update players in there, look for WO markers if LB<=2
+      finalize if final match..
       -}
   in t
 
@@ -242,14 +259,14 @@ ffaElimination gs adv np
           adv'' = max adv' 1 -- but not if we only left 1 ^^ should still hold
           leftover = length g * adv''
 
-        gps = takeWhile ((>1) . length) $ iterate nextGroup $ np `inGroupsOf` gs
-        allGps = gps ++ [nextGroup (last gps)]
+        grps = takeWhile ((>1) . length) $ iterate nextGroup $ np `inGroupsOf` gs
+        final = nextGroup $ last grps
 
         -- finally convert raw group lists to matches
-        makeRound gs r = zipWith makeMatch gs [1..] where
+        makeRound grp r = zipWith makeMatch grp [1..] where
           makeMatch g i = Match { locId = l, players = g, scores = Nothing } where
             l = Location { brac = Winners, rnd = r, num = i }
 
-    in concat $ zipWith makeRound allGps [1..]
+    in concat $ zipWith makeRound (grps ++ [final]) [1..]
 
---ffa gs adv np = mapM_ print (ffaElimination gs adv np)
+ffa gs adv np = mapM_ print (ffaElimination gs adv np)
