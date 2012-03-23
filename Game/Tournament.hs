@@ -24,8 +24,6 @@ import Numeric (showIntAtBase, readInt)
 import Data.List (sort, sortBy)
 import Data.Ord (comparing)
 import Data.Bits (shiftL)
-import Data.Maybe (fromJust)
-
 
 
 {-
