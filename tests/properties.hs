@@ -63,9 +63,9 @@ robinProp3 n = n >= 2 ==>
 robinProp4 :: Int -> Property
 robinProp4 n = n >= 2 ==>
   let rs = robin n
-      player k = map (\(x,y) -> if x == k then y else x) $ -- reduce down to the list of combatants of k
-        concatMap (filter (\(x,y) -> x == k || y == k)) rs -- all pairs across all rounds containing k
-  in all (\i -> [1..n] \\ player i == [i]) [1..n] -- all players play all combatants except self
+      pairsFor k = concatMap (filter (\(x,y) -> x == k || y == k)) rs
+      combatants k = map (\(x,y) -> if x == k then y else x) $ pairsFor k
+  in all (\i -> [1..n] \\ combatants i == [i]) [1..n]
 
 
 -- -----------------------------------------------------------------------------
