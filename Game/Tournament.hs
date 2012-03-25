@@ -21,7 +21,7 @@ module Game.Tournament (
 
 import Data.Char (intToDigit, digitToInt)
 import Numeric (showIntAtBase, readInt)
-import Data.List (sort, sortBy)
+import Data.List (sort, sortBy, genericTake)
 import Data.Ord (comparing)
 import Data.Bits (shiftL)
 
@@ -49,9 +49,9 @@ seeds p i = (1 - lastSeed + 2^p, lastSeed) where
   lastSeed = let (k, r) = ((floor . logBase 2 . fromIntegral) i, i - 2^k) in
     case r of
       0 -> 2^(p-k)
-      _ -> let bstr = reverse $ showIntAtBase 2 intToDigit (i - 2*r) ""
-               nr = fst $ head $ readInt 2 (`elem` "01") digitToInt bstr
-           in 2^(p-k-1) + nr `shiftL` (p - length bstr)
+      _ -> 2^(p-k-1) + nr `shiftL` (p - length bstr) where
+        bstr = reverse $ showIntAtBase 2 intToDigit (i - 2*r) ""
+        nr = fst $ head $ readInt 2 (`elem` "01") digitToInt bstr
 
 -- | Check if the 3 criteria for perfect seeding holds for the current
 -- power and seed pair arguments.
@@ -80,15 +80,15 @@ n `inGroupsOf` s = map (sort . filter (<=n) . makeGroup) [1..ngrps] where
 -- | Round robin schedules a list of n players and returns
 -- a list of rounds (where a round is a list of pairs). Uses
 -- http://en.wikipedia.org/wiki/Round-robin_tournament#Scheduling_algorithm
-robin :: Int -> [RobinRound]
+robin :: Integral a => a -> [[(a,a)]]
 robin n = map (filter notDummy . toPairs) rounds where
   n' = if odd n then n+1 else n
   m = n' `div` 2 -- matches per round
-  rounds = take (n'-1) $ iterate robinPermute [1..n']
+  rounds = genericTake (n'-1) $ iterate robinPermute [1..n']
   notDummy (x,y) = all (<=n) [x,y]
-  toPairs x =  take m $ zip x (reverse x)
+  toPairs x =  genericTake m $ zip x (reverse x)
 
-robinPermute :: [Int] -> [Int]
+robinPermute :: [a] -> [a]
 robinPermute [] = []
 robinPermute (x:xs) = x : last xs : init xs
 
@@ -150,7 +150,7 @@ duelElimination etype np
         woScores ps
           |  0 `elem` ps = Nothing
           | -1 `elem` ps = Just $ map (\x -> if x == -1 then 0 else 1) ps
-          | otherwise     = Nothing
+          | otherwise    = Nothing
 
         -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
         markWO (x, y) = map (\a -> if a <= np then a else -1) [x,y]
@@ -208,7 +208,7 @@ duelElimination etype np
 -- and the loser propagated to the loser bracket if applicable.
 scoreElimination :: Tournament -> Match -> Tournament
 scoreElimination t m =
-  let e = if not $ any ((== Losers) . brac . locId) t then Single else Double
+  let e = if any ((== Losers) . brac . locId) t then Double else Single
       l = locId m
       mo = head $ filter ((== l) . locId) t
       {-

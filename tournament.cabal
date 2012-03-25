@@ -23,16 +23,23 @@ Cabal-version : >= 1.2
 Extra-source-files:
   Readme.md
   tests/Property.hs
+
+Flag test
+  Description: Build the test executable.
+  Default: False
 --------------------------------------------------------------------------------
 
 library
   hs-source-dirs  : .
   exposed-modules : Game.Tournament
-  build-depends   : base    >= 4 && < 5
+  build-depends   : base >= 4 && < 5
   ghc-options     : -W
 
 -------------------------------------------------------------------------------
 executable tournament-test
+  if !flag( test )
+    Buildable     : False
+
   main-is         : tests/Properties.hs
   other-modules   : Game.Tournament
   build-depends   :
