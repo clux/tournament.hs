@@ -56,7 +56,7 @@ seeds p i = (1 - lastSeed + 2^p, lastSeed) where
 -- | Check if the 3 criteria for perfect seeding holds for the current
 -- power and seed pair arguments.
 -- This can be used to make a measure of how good the seeding was in retrospect
-duelValid :: Int -> (Int, Int) -> Bool
+duelValid :: Integral a => a -> (a, a) -> Bool
 duelValid n (a, b) = odd a && even b && a + b == 1 + 2^n
 
 -- -----------------------------------------------------------------------------
@@ -90,9 +90,8 @@ robin n = map (filter notDummy . toPairs) rounds where
 
 robinPermute :: [a] -> [a]
 robinPermute [] = []
-robinPermute (x:xs) = x : last xs : init xs
-
-type RobinRound = [(Int, Int)]
+robinPermute [x] = [x]
+robinPermute (x:xs) = x : last xs : init xs -- know xs != []
 -- -----------------------------------------------------------------------------
 -- Duel elimination
 
