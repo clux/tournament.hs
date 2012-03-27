@@ -22,23 +22,21 @@ Cabal-version : >= 1.2
 
 Extra-source-files:
   Readme.md
-  tests/Property.hs
-
 --------------------------------------------------------------------------------
-
 library
   hs-source-dirs  : .
   exposed-modules : Game.Tournament
-  build-depends   : base >= 4 && < 5
+  build-depends   :
+        base          == 4.*
+      , containers    == 0.4.*
   ghc-options     : -W
-
 -------------------------------------------------------------------------------
 Test-Suite test-tournament
   main-is         : Test.hs
   type            : exitcode-stdio-1.0
   other-modules   : Game.Tournament
   build-depends   :
-        base                        >= 4.0 && < 5.0
+        base                        == 4.*
       , QuickCheck                  == 2.4.*
       , test-framework-quickcheck2  == 0.2.*
       , test-framework              == 0.6.*
