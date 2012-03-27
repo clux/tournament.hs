@@ -6,6 +6,9 @@ import qualified Game.Tournament as T
 import Test.QuickCheck
 import Data.List ((\\), nub, genericLength)
 import Control.Monad (liftM)
+import Test.Framework (defaultMain, testGroup)
+--import Test.Framework.Providers.HUnit
+import Test.Framework.Providers.QuickCheck2 (testProperty)
 
 -- helper instances for positive short ints
 newtype RInt = RInt {rInt :: Int} deriving (Eq, Ord, Show, Num, Integral, Real, Enum)
@@ -39,7 +42,7 @@ groupsProp3 (n', s') = n `mod` s == 0 ==>
 
 -- sum of seeds is perfect when groups are full and even sized
 groupsProp4 :: GroupArgs -> Property
-groupsProp4 (n', s') = n `mod` s == 0 && even (n `div` s) ==>
+groupsProp4 (n', s') = n `mod` s == 0 && even s ==>
   maximum gsums == minimum gsums where
     gsums = map sum $ n `T.inGroupsOf` s
     (n, s) = (fromIntegral n', fromIntegral s')
@@ -75,27 +78,21 @@ robinProp4 n = all (\i -> [1..n] \\ combatants i == [i]) [1..n] where
 
 -- -----------------------------------------------------------------------------
 -- Test harness
+tests = [
+    testGroup "robin" [
+      testProperty "robin num rounds" robinProp1
+    , testProperty "robin num matches" robinProp2
+    , testProperty "robin unique round players" robinProp3
+    , testProperty "robin all plaid all" robinProp4
+    ]
+  , testGroup "inGroupsOf" [
+      testProperty "group sizes all <= input s" groupsProp1
+    , testProperty "group includes all [1..n]" groupsProp2
+    , testProperty "group sum of seeds max diff" groupsProp3
+    , testProperty "group sum of seeds min diff" groupsProp4
+    ]
+  ]
 
-qc = quickCheckWith stdArgs {
-    maxSuccess = 50
-  , chatty = True
-  }
 
 main :: IO ()
-main = do
-  putStrLn "test robin:"
-  {-mapM_ qc [
-      robinProp1
-    , robinProp2
-    , robinProp3
-    , robinProp4
-    ]-}
-  --putStrLn "test inGroupsOf"
-  mapM_ qc [
-      groupsProp1
-    , groupsProp2
-    ]
-  -- need a better thing to use as qc
-  -- else its type becomes rigid after one run
-
-  putStrLn "done"
+main = defaultMain tests

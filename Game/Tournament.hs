@@ -91,7 +91,7 @@ robin n = map (filter notDummy . toPairs) rounds where
 robinPermute :: [a] -> [a]
 robinPermute [] = []
 robinPermute [x] = [x]
-robinPermute (x:xs) = x : last xs : init xs -- know xs != []
+robinPermute (x:xs) = x : last xs : init xs -- know not null xs
 -- -----------------------------------------------------------------------------
 -- Duel elimination
 
