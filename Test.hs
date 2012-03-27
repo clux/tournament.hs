@@ -7,7 +7,6 @@ import Test.QuickCheck
 import Data.List ((\\), nub, genericLength)
 import Control.Monad (liftM)
 import Test.Framework (defaultMain, testGroup)
---import Test.Framework.Providers.HUnit
 import Test.Framework.Providers.QuickCheck2 (testProperty)
 
 -- helper instances for positive short ints
@@ -92,7 +91,6 @@ tests = [
     , testProperty "group sum of seeds min diff" groupsProp4
     ]
   ]
-
 
 main :: IO ()
 main = defaultMain tests
