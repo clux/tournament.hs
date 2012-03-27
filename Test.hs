@@ -77,6 +77,7 @@ robinProp4 n = all (\i -> [1..n] \\ combatants i == [i]) [1..n] where
 
 -- -----------------------------------------------------------------------------
 -- Test harness
+
 tests = [
     testGroup "robin" [
       testProperty "robin num rounds" robinProp1
