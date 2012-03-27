@@ -24,9 +24,6 @@ Extra-source-files:
   Readme.md
   tests/Property.hs
 
-Flag test
-  Description: Build the test executable.
-  Default: False
 --------------------------------------------------------------------------------
 
 library
@@ -36,11 +33,9 @@ library
   ghc-options     : -W
 
 -------------------------------------------------------------------------------
-executable tournament-test
-  if !flag( test )
-    Buildable     : False
-
-  main-is         : tests/Properties.hs
+Test-Suite test-tournament
+  main-is         : Test.hs
+  type            : exitcode-stdio-1.0
   other-modules   : Game.Tournament
   build-depends   :
         base                        >= 4.0 && < 5.0
