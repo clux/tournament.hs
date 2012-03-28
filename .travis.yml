@@ -1,7 +1,7 @@
 language: haskell
 
 install:
-  - cabal-dev update
-  - cabal-dev install --enable-tests --only-dependencies
+  - cabal update
+  - cabal install --enable-tests --only-dependencies
 
-script: cabal-dev configure --enable-tests && cabal-dev build && cabal-dev test
+script: cabal configure --enable-tests && cabal build && cabal test
