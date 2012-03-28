@@ -9,11 +9,11 @@ module Game.Tournament (
    , robin             -- :: Int -> [RobinRound]
 
    -- * Duel eliminationOf
-   --, duelElimination   -- :: Elimination -> Int -> Tournament
-   --, scoreElimination  -- :: Tournament -> Match -> Tournament
+   , duelElimination   -- :: Elimination -> Int -> Tournament
+   , scoreElimination  -- :: Tournament -> MatchId -> Match -> Tournament
 
    -- * FFA Elimination
-   --, ffaElimination    -- :: Int -> Int -> Int -> Tournament
+   , ffaElimination    -- :: Int -> Int -> Int -> Tournament
    -- * TODO: what to do here?
    --, main
 
@@ -46,7 +46,7 @@ testor t n = mapM_ print $ Map.toList $ duelElimination t n
 -- | Computes both the player seeds (in order) for a duel elimiation match.
 -- The first argument, p, is the power of the tournament,
 -- and the second, i, is the match number.
--- Well-defined for n > 0 and 0 < i <= 2^(p-1)
+-- Well-defined for p > 0 and 0 < i <= 2^(p-1)
 seeds :: Int -> Int -> (Int, Int)
 seeds p i = (1 - lastSeed + 2^p, lastSeed) where
   lastSeed = let (k, r) = ((floor . logBase 2 . fromIntegral) i, i - 2^k) in
@@ -107,14 +107,23 @@ data MatchId = MID Bracket Round Game deriving (Show, Eq, Ord)
 --Note: instanceof Ord MatchId sorts by unequal Bracket, else unequal Round, else Game
 gameNum (MID _ _ (G g)) = g -- convenience
 
+type Players = [Int]
+type Scores = Maybe [Int]
+
 data Match = M [Int] (Maybe [Int]) deriving (Show, Eq)
 type Tournament = Map MatchId Match
 
 data Elimination = Single | Double deriving (Show, Eq, Ord)
 
 results :: Match -> [Int]
-results (M _ Nothing) = repeat 0
+results (M pls Nothing) = take (length pls) $ repeat 0
 results (M pls (Just scrs)) = map fst $ reverse $ sortBy (comparing snd) $ zip pls scrs
+
+winner :: Match -> Int
+winner = head . results
+
+loser :: Match -> Int
+loser = last . results
 
 -- | Create match shells for an elimination tournament
 -- hangles walkovers and leaves the tournament in a stable initial state
@@ -124,14 +133,12 @@ duelElimination etype np
   -- 2 players Single <=> a bestempty of 1 match
   -- 2 players Double <=> a best of 3 match
   -- and grand final rules fail when LB final is R1 (p=1) as GF is then 2*p-1 == 1 ↯
-  | np <= 2 = error "Need >2 competitors for an elimination tournament"
+  | np < 4 = error "Need >=4 competitors for an elimination tournament"
 
   -- else, a single/double elim with at least 2 WB rounds happening
   | otherwise = if etype == Single then wb else Map.union wb lb where
     p = (ceiling . logBase 2 . fromIntegral) np
 
-    woWinner = head . results
-    woLoser = last . take 2 . results
     woScores ps
       |  0 `elem` ps = Nothing
       | -1 `elem` ps = Just $ map (\x -> if x == -1 then 0 else 1) ps
@@ -145,21 +152,21 @@ duelElimination etype np
       s = woScores pl
 
     -- make WBR2 shells by using paired WBR1 results to propagate walkover winners
-    makeWbR2 ((l1, m1), (l2, m2)) = (l, M pl s) where
+    makeWbR2 ((_, m1), (l2, m2)) = (l, M pl s) where
       l = MID WB (R 2) (G (gameNum l2 `div` 2))
-      pl = map woWinner [m1, m2]
+      pl = map winner [m1, m2]
       s = woScores pl
 
     -- make LBR1 shells by using paired WBR1 results to propagate WO markers down
-    makeLbR1 ((l1, m1), (l2, m2)) = (l, M pl s) where
+    makeLbR1 ((_, m1), (l2, m2)) = (l, M pl s) where
       l = MID LB (R 1) (G (gameNum l2 `div` 2))
-      pl = map woLoser [m1, m2]
+      pl = map loser [m1, m2]
       s = woScores pl
 
     -- make LBR2 shells by using LBR1 results to propagate WO markers if 2x
-    makeLbR2 (l1, m1) i = (l, M pl Nothing) where
+    makeLbR2 (l1, m1) = (l, M pl Nothing) where
       l = MID LB (R 2) (G (gameNum l1))
-      plw = woWinner m1
+      plw = winner m1
       pl = if odd (gameNum l) then [0, plw] else [plw, 0]
 
     -- remaining rounds empty
@@ -172,10 +179,10 @@ duelElimination etype np
 
     -- construct matches
     wbr1 = map makeWbR1 [1..2^(p-1)]
-    wbr1pairs = filter (\(_ , (l,m)) -> even (gameNum l)) $ zip wbr1 (tail wbr1)
+    wbr1pairs = filter (\(_ , (l,_)) -> even (gameNum l)) $ zip wbr1 (tail wbr1)
     wbr2 = map makeWbR2 $ take (2^(p-2)) wbr1pairs
     lbr1 = map makeLbR1 $ take (2^(p-2)) wbr1pairs
-    lbr2 = zipWith makeLbR2 lbr1 [1..]
+    lbr2 = map makeLbR2 lbr1
     wbrest = concatMap makeWbRound [3..p]
 
     gf1 = MID LB (R (2*p-1)) (G 1)
@@ -186,25 +193,48 @@ duelElimination etype np
     wb = Map.fromList $ wbr1 ++ wbr2 ++ wbrest
     lb = Map.fromList $ lbr1 ++ lbr2 ++ lbrest ++ gfms
 
--- | Update an Elimination tournament by passing in the Match, MatchID, and its
+-- | Update a duel elimination tournament by passing in the Match, MatchID, and its
 -- associated tournament. Returns an updated tournament with the winner propagated
 -- to the next round, and the loser propagated to the loser bracket if applicable.
 scoreElimination :: Tournament -> MatchId -> Match -> Tournament
-scoreElimination t @id(MID br (R r) (G g)) scrs = t where
+scoreElimination t id@(MID br (R r) (G g)) m@(M pls (Just scrs)) = t where
   --could optimize these 2 away by passing in these two params, but premature pointlessness
-  etype = if Map.null $ Map.filterWithKey (\(MID br _ _) _ -> br == LB) t
+  etype = if Map.null $ Map.filterWithKey (\(MID bri _ _) _ -> bri == LB) t
           then Single else Double
-  np = (2*) $ Map.size $ Map.filterWithKey (\(MID br (R r) _) _ -> br == WB && r == 1) t
+  np = (2*) $ Map.size $ Map.filterWithKey (\(MID bri (R ri) _) _ -> bri == WB && ri == 1) t
+  n = (ceiling . logBase 2 . fromIntegral) np
 
   --lookup :: Ord k => k -> Map k a -> Maybe a
   --mo = Map.lookup id t -- TODO: secure this
 
-  --t' = Map.adjust mainAdjust id t
+  -- score given match
+  t' = Map.adjust (const m) id t
 
-  --need to adjust with special functions
-  mainAdjust (M plo sco) = (M pln scn) where
+  ghalf = g+1 `div` 2
+  -- move winner to next round if not a final
+  stdNext = if br == WB
+    then MID WB (R (r+1)) (G ghalf)
+    else MID LB (R (r+1)) (G (if even r then ghalf else g))
+
+  -- move loser to this if applicable
+  stdDrop = if r == 1
+    then MID LB (R 1) (G ghalf)
+    else MID LB (R ((r-1)*2)) (G g)
+
+
+  lbAdjust (M plo sco) = (M pln scn) where
     pln = plo
     scn = sco
+
+  --TODO: update WB round r+1 [if exists and br==WB] game (g+1) `div` 2
+  -- also need WOScores when updating WBR1, LBR1 and LBR2
+
+  -- NB: if LB advancing player wins GF(1) a GF(2) is necessary
+  deFinalOneWon = (etype == Double && br == LB && r == 2*n-1 && sort scrs == scrs)
+  deFinalTwoWon = etype == Double && br == LB && r == 2*n
+  seFinalWon = etype == Single && br == WB && r == n
+  needFinalize = seFinalWon || deFinalOneWon || deFinalTwoWon
+
 
 -- | Checks if a Tournament is valid
 {-
