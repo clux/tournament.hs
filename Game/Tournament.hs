@@ -1,7 +1,7 @@
 module Game.Tournament (
    -- * Duel helpers
      seeds             -- :: Int -> Int -> (Int, Int)
-   , duelValid         -- :: Int -> (Int, Int) -> Bool
+   , duelExpected      -- :: Int -> (Int, Int) -> Bool
 
    -- * Group helpers
    , inGroupsOf        -- :: Int -> Int -> [Group]
@@ -21,7 +21,7 @@ import Numeric (showIntAtBase, readInt)
 import Data.List (sort, sortBy, genericTake)
 import Data.Ord (comparing)
 import Data.Bits (shiftL)
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, isJust)
 import Data.Map (Map)
 import qualified Data.Map as Map
 
@@ -46,8 +46,8 @@ seeds p i = (1 - lastSeed + 2^p, lastSeed) where
 -- | Check if the 3 criteria for perfect seeding holds for the current
 -- power and seed pair arguments.
 -- This can be used to make a measure of how good the seeding was in retrospect
-duelValid :: Integral a => a -> (a, a) -> Bool
-duelValid n (a, b) = odd a && even b && a + b == 1 + 2^n
+duelExpected :: Integral a => a -> (a, a) -> Bool
+duelExpected n (a, b) = odd a && even b && a + b == 1 + 2^n
 
 -- -----------------------------------------------------------------------------
 -- Group helpers
@@ -96,18 +96,19 @@ gameNum (MID _ _ (G g)) = g -- convenience
 
 type Players = [Int]
 type Scores = Maybe [Int]
+scores (M _ scr) = scr -- convenience
 
 data Match = M [Int] (Maybe [Int]) deriving (Show, Eq)
 type Tournament = Map MatchId Match
 -- could make Tournament: data Tournament = Tournament (Map MatchId Match)
 -- then instanceof Show Tournament where show = showTournament
 -- but then you always have to unwrap it to get the list
-showTournament t = mapM_ print $ Map.toList $ t
+showTournament t = mapM_ print $ Map.toList t
 
 data Elimination = Single | Double deriving (Show, Eq, Ord)
 
 results :: Match -> [Int]
-results (M pls Nothing) = take (length pls) $ repeat 0
+results (M pls Nothing) = replicate (length pls) 0
 results (M pls (Just scrs)) = map fst $ reverse $ sortBy (comparing snd) $ zip pls scrs
 
 winner :: Match -> Int
@@ -115,6 +116,12 @@ winner = head . results
 
 loser :: Match -> Int
 loser = last . results
+
+woScores :: [Int] -> Maybe [Int]
+woScores ps
+  |  0 `elem` ps = Nothing
+  | -1 `elem` ps = Just $ map (\x -> if x == -1 then 0 else 1) ps
+  | otherwise    = Nothing
 
 -- | Create match shells for an elimination tournament
 -- hangles walkovers and leaves the tournament in a stable initial state
@@ -127,13 +134,8 @@ duelElimination etype np
   | np < 4 = error "Need >=4 competitors for an elimination tournament"
 
   -- else, a single/double elim with at least 2 WB rounds happening
-  | otherwise = if etype == Single then wb else Map.union wb lb where
+  | otherwise = if etype == Single then wb else wb `Map.union` lb where
     p = (ceiling . logBase 2 . fromIntegral) np
-
-    woScores ps
-      |  0 `elem` ps = Nothing
-      | -1 `elem` ps = Just $ map (\x -> if x == -1 then 0 else 1) ps
-      | otherwise    = Nothing
 
     -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
     markWO (x, y) = map (\a -> if a <= np then a else -1) [x,y]
@@ -170,9 +172,11 @@ duelElimination etype np
 
     -- construct matches
     wbr1 = map makeWbR1 [1..2^(p-1)]
-    wbr1pairs = filter (\(_ , (l,_)) -> even (gameNum l)) $ zip wbr1 (tail wbr1)
-    wbr2 = map makeWbR2 $ take (2^(p-2)) wbr1pairs
-    lbr1 = map makeLbR1 $ take (2^(p-2)) wbr1pairs
+    wbr1pairs = take (2^(p-2))
+      $ filter (\(_ , (l, _)) -> even (gameNum l))
+      $ zip wbr1 (tail wbr1)
+    wbr2 = map makeWbR2 wbr1pairs
+    lbr1 = map makeLbR1 wbr1pairs
     lbr2 = map makeLbR2 lbr1
     wbrest = concatMap makeWbRound [3..p]
 
@@ -184,84 +188,104 @@ duelElimination etype np
     wb = Map.fromList $ wbr1 ++ wbr2 ++ wbrest
     lb = Map.fromList $ lbr1 ++ lbr2 ++ lbrest ++ gfms
 
+-- Find the next Id from current (and power of tournament).
+-- Assumes the MatchId is valid, and not the last in WB
+progressNext :: Int -> Elimination -> MatchId -> Maybe MatchId
+progressNext p e (MID br (R r) (G g))
+  -- Nothing from invalid combinations. NB: WB ends 1 round faster depending on e
+  | (r < 1 || r >= 2*p) || (br == WB && (r > p || (e == Single && r == p))) = Nothing
+  | br == LB  = Just $ MID LB (R (r+1)) (G ghalf)   -- standard LB progression
+  | r == p    = Just $ MID LB (R (2*p-1)) (G ghalf) -- WB winner -> GF1 path
+  | otherwise = Just $ MID WB (R (r+1)) (G ghalf)   -- standard WB progression
+    where ghalf = g+1 `div` 2
+
+-- Find the drop Id from the current to LB (only makes sense for Double Elimination)
+progressDrop :: Int -> MatchId -> Maybe MatchId
+progressDrop p (MID br (R r) (G g))
+  | r < 1 || r > p = Nothing
+  | r == 1    = Just $ MID LB (R 1) (G ghalf)     -- WBR1 -> r=1 g/2 (LBR1 only gets input from WB)
+  | otherwise = Just $ MID LB (R ((r-1)*2)) (G g) -- WBRr -> 2x as late per round in WB
+    where ghalf = g+1 `div` 2
+
+
 -- | Update a duel elimination tournament by passing in the Match, MatchID, and its
 -- associated tournament. Returns an updated tournament with the winner propagated
 -- to the next round, and the loser propagated to the loser bracket if applicable.
 scoreElimination :: Tournament -> MatchId -> Match -> Tournament
-scoreElimination t id@(MID br (R r) (G g)) m@(M pls (Just scrs)) = t where
+scoreElimination t id@(MID br (R r) (G g)) m@(M pls (Just scrs)) = t''' where
   --could optimize these 2 away by passing in these two params, but premature pointlessness
-  etype = if Map.null $ Map.filterWithKey (\(MID bri _ _) _ -> bri == LB) t
+  e = if Map.null $ Map.filterWithKey (\(MID bri _ _) _ -> bri == LB) t
           then Single else Double
   np = (2*) $ Map.size $ Map.filterWithKey (\(MID bri (R ri) _) _ -> bri == WB && ri == 1) t
-  n = (ceiling . logBase 2 . fromIntegral) np
-  ghalf = g+1 `div` 2
+  p = (ceiling . logBase 2 . fromIntegral) np
 
-  --lookup :: Ord k => k -> Map k a -> Maybe a
-  --mo = Map.lookup id t -- TODO: secure this
+  updatePlayer :: MatchId -> Int -> Int -> Tournament -> (Maybe Match, Tournament)
+  updatePlayer kmid idx replaced tmap = Map.updateLookupWithKey adjustNext kmid tmap where
+    adjustNext _ (M plsi _) = Just (M plsm (woScores plsm)) where
+      plsm = zipWith (\o i -> if i == idx then replaced else o) plsi [0,1]
 
   -- 1. score given match
   t' = Map.adjust (const m) id t
 
   -- 2. move winner to next round if not a final
-  stdNext = if br == WB
-    then if r == n -- but only need to do this if Double elim
-      then MID LB (R (2*n-1)) (G ghalf) -- and should move to top
-      else MID WB (R (r+1)) (G ghalf)   -- standard WB progression
-    else MID LB (R (r+1)) (G (if even r then ghalf else g)) -- standard LB progression
-  nextPos = if br == WB
-    then (if odd g then 0 else 1) -- WB game maintains standard alignment
-    else
-      if r == 2*n-2 then 1      -- LB final winner => bottom of GF
-      else if r == 2*n-1 then 0 -- GF(1) winnner should move to the top [semantic only]
-      else if (r == 1 && odd g) || (r > 1 && odd r)
-        then 0  -- winner moves up in even LBR1 matches, and only half of the even r LB rounds
-        else 1  -- => "normal progression" only in the halving "round" (even r)
-        -- this ensures the bracket "moves" upwards each new (even r) refill after R2
+  Just nextMid = progressNext p e id
+  nextPos
+    | br == WB = if odd g then 0 else 1         -- WB game maintains standard alignment always
+    | r == 2*p-2 = 1                            -- LB final winner => bottom of GF
+    | r == 2*p-1 = 0                            -- GF(1) winnner should move to the top [semantic only]
+    | (r == 1 && odd g) || (r > 1 && odd r) = 1 -- winner usually takes the bottom position
+    | otherwise = if odd g then 0 else 1        -- normal progression in even rounds + R1 only
+    -- by placing winner on bottom consistently in odd rounds the bracket moves upward each new refill
+    -- the GF(1) and LB final are special cases that give opposite results to the advanced rule above
 
   -- update next match if we're not at the end:
-  validWbNext = (etype == Single && r < n) || (etype == Double && r <= n)
+  validWbNext = (e == Single && r < p) || (e == Double && r <= p)
   deFinalIsDouble = maximum scrs /= head scrs
-  validNext = (br == WB && validWbNext) || (br == LB && (r < 2*n-1 || deFinalIsDouble))
-  --TODO: adjust here
+  validNext = (br == WB && validWbNext) || (br == LB && (r < 2*p-1 || deFinalIsDouble))
+
+  -- adjust and return value to see if propagation of woMarkers are necessary
+  -- TODO: if validNext and don't assume nextVal isJust
+  (Just nextVal, t'') = updatePlayer nextMid nextPos (winner m) t'
+
 
   -- 3. move loser to down if we were in winners
-  stdDrop = if r == 1
-    then MID LB (R 1) (G ghalf)     -- WBR1 drops to R 1 G ghalf (because LBR1 only gets input from WB)
-    else MID LB (R ((r-1)*2)) (G g) -- WBRr drops to R twice as late as the WBR r and same g
-
-  -- what position to drop must match the nextPos for LB
-  -- we must drop on top in all the later rounds (r>2) and initially for odd g
-  -- in all other cases nextPos takes the complement of this
+  Just dropMid = progressDrop p id
+  -- drop on top after initial round, and initially for odd g to match bracket movement
   dropPos = if r > 2 || odd g then 0 else 1
 
   -- update loser in LB if we're not in LB and it's not Single Elim:
-  validDrop = br == WB && etype == Double
-  --TODO: adjust here
+  validDrop = br == WB && e == Double
 
+  -- adjust and return value to see if propagation of woMarkers are necessary
+  -- TODO: if validDrop and don't assume dropVal isJust
+  (Just dropVal, t''') = updatePlayer dropMid dropPos (loser m) t''
 
   -- 4. Check for WO markers in LBR1 and LBR2
-  --TODO: if step 2. touched LBR2 or step 3. touched LBR1 or LBR2, we need to check for markers
+  checkLbR1 = inLbR 1 dropMid && (isJust . scores) dropVal
+  checkLbR2 = (inLbR 2 dropMid && (isJust . scores) dropVal)
+           || (inLbR 2 nextMid  && (isJust . scores) nextVal)
+  inLbR ro (MID bri (R ri) _) = bri == LB && ri == r
+
   {-
-  can do updateLookupWithKey to return the value updated in step 3
-  with this we can check whether a lbr1 check or lbr2 check is necessary
+  howto do 4 nicely??
+  if checkLbR1
+
   -}
 
-  lbAdjust (M plo sco) = (M pln scn) where
-    pln = plo
-    scn = sco
 
-  --TODO: update WB round r+1 [if exists and br==WB] game (g+1) `div` 2
-  -- also need WOScores when updating WBR1, LBR1 and LBR2
-
-  -- NB: if LB advancing player wins GF(1) a GF(2) is necessary
-  deFinalOneWon = etype == Double && br == LB && r == 2*n-1 && not deFinalIsDouble
-  deFinalTwoWon = etype == Double && br == LB && r == 2*n
-  seFinalWon = etype == Single && br == WB && r == n
-  needFinalize = seFinalWon || deFinalOneWon || deFinalTwoWon
-
+-- conditions for whether a Tournament is finished: TODO: factor to new fn?
+-- NB: if LB advancing player wins GF(1) a GF(2) is necessary
+{-deFinalOneWon = etype == Double && br == LB && r == 2*n-1 && not deFinalIsDouble
+deFinalTwoWon = etype == Double && br == LB && r == 2*n
+seFinalWon = etype == Single && br == WB && r == n
+needFinalize = seFinalWon || deFinalOneWon || deFinalTwoWon
+-}
 
 -- | Checks if a Tournament is valid
 {-
+PERHAPS BETTER:
+WB: always has np (rounded to nearest power) - 1 matches -- i.e. np = 2^p some p > 1
+LB: always has 2*[num_wb_matches - 2^(p-1) + 1] -- i.e. minus the first round's matches but plus two finals
 tournamentValid :: Tournament -> Bool
 tournamentValid t =
   let (wb, lb) = partition ((== WB) . brac . locId) r
