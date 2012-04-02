@@ -96,16 +96,14 @@ gameNum (MID _ _ (G g)) = g -- convenience
 
 type Players = [Int]
 type Scores = Maybe [Int]
+data Match = M [Int] (Maybe [Int]) deriving (Show, Eq)
 scores (M _ scr) = scr -- convenience
 
-data Match = M [Int] (Maybe [Int]) deriving (Show, Eq)
 type Tournament = Map MatchId Match
--- could make Tournament: data Tournament = Tournament (Map MatchId Match)
--- then instanceof Show Tournament where show = showTournament
--- but then you always have to unwrap it to get the list
+
 showTournament t = mapM_ print $ Map.toList t
 
-data Elimination = Single | Double deriving (Show, Eq, Ord)
+data Elimination = Single | Double | FFA deriving (Show, Eq, Ord)
 
 results :: Match -> [Int]
 results (M pls Nothing) = replicate (length pls) 0
@@ -126,15 +124,16 @@ woScores ps
 -- | Create match shells for an elimination tournament
 -- hangles walkovers and leaves the tournament in a stable initial state
 duelElimination :: Elimination -> Int -> Tournament
-duelElimination etype np
+duelElimination e np
   -- Enforce >2 players for a tournament. It is possible to extend to 2, but:
   -- 2 players Single <=> a bestempty of 1 match
   -- 2 players Double <=> a best of 3 match
   -- and grand final rules fail when LB final is R1 (p=1) as GF is then 2*p-1 == 1 ↯
   | np < 4 = error "Need >=4 competitors for an elimination tournament"
+  | e == FFA = error "Use ffaElimination to initialize an FFA elimination tournament"
 
   -- else, a single/double elim with at least 2 WB rounds happening
-  | otherwise = if etype == Single then wb else wb `Map.union` lb where
+  | otherwise = if e == Single then wb else wb `Map.union` lb where
     p = (ceiling . logBase 2 . fromIntegral) np
 
     -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
@@ -188,83 +187,87 @@ duelElimination etype np
     wb = Map.fromList $ wbr1 ++ wbr2 ++ wbrest
     lb = Map.fromList $ lbr1 ++ lbr2 ++ lbrest ++ gfms
 
--- Find the next Id from current (and power of tournament).
--- Assumes the MatchId is valid, and not the last in WB
-progressNext :: Int -> Elimination -> MatchId -> Maybe MatchId
-progressNext p e (MID br (R r) (G g))
-  -- Nothing from invalid combinations. NB: WB ends 1 round faster depending on e
-  | (r < 1 || r >= 2*p) || (br == WB && (r > p || (e == Single && r == p))) = Nothing
-  | br == LB  = Just $ MID LB (R (r+1)) (G ghalf)   -- standard LB progression
-  | r == p    = Just $ MID LB (R (2*p-1)) (G ghalf) -- WB winner -> GF1 path
-  | otherwise = Just $ MID WB (R (r+1)) (G ghalf)   -- standard WB progression
-    where ghalf = g+1 `div` 2
 
--- Find the drop Id from the current to LB (only makes sense for Double Elimination)
-progressDrop :: Int -> MatchId -> Maybe MatchId
-progressDrop p (MID br (R r) (G g))
-  | r < 1 || r > p = Nothing
-  | r == 1    = Just $ MID LB (R 1) (G ghalf)     -- WBR1 -> r=1 g/2 (LBR1 only gets input from WB)
-  | otherwise = Just $ MID LB (R ((r-1)*2)) (G g) -- WBRr -> 2x as late per round in WB
-    where ghalf = g+1 `div` 2
+-- Find the MatchId and the position in which to put the winner of current game.
+-- Assumes the MatchId is valid.
+progressNext :: Int -> Elimination -> MatchId -> Maybe (MatchId, Int)
+progressNext p e (MID br (R r) (G g))
+  -- Nothing if last Match. NB: WB ends 1 round faster depending on e
+  | r >= 2*p || (br == WB && (r > p || (e == Single && r == p))) = Nothing
+  | br == LB  = Just (MID LB (R (r+1)) (G ghalf), pos)   -- standard LB progression
+  | r == p    = Just (MID LB (R (2*p-1)) (G ghalf), pos) -- WB winner -> GF1 path
+  | otherwise = Just (MID WB (R (r+1)) (G ghalf), pos)   -- standard WB progression
+    where 
+      ghalf = g+1 `div` 2
+      pos
+        | br == WB = if odd g then 0 else 1         -- WB maintains standard alignment
+        | r == 2*p-2 = 1                            -- LB final winner => bottom of GF
+        | r == 2*p-1 = 0                            -- GF(1) winnner moves to the top [semantic]
+        | (r == 1 && odd g) || (r > 1 && odd r) = 1 -- winner usually takes the bottom position
+        | otherwise = if odd g then 0 else 1        -- normal progression only in even rounds + R1
+        -- by placing winner on bottom consistently in odd rounds the bracket moves upward each new refill
+        -- the GF(1) and LB final are special cases that give opposite results to the advanced rule above
+
+-- Find the MatchId and the position in which to put the loser of current game.
+progressDrop :: Int -> Elimination -> MatchId -> Maybe (MatchId, Int)
+progressDrop p e (MID br (R r) (G g))
+  | e == Single || r > p = Nothing
+  | r == 1    = Just (MID LB (R 1) (G ghalf), pos)     -- WBR1 -> r=1 g/2 (LBR1 only gets input from WB)
+  | otherwise = Just (MID LB (R ((r-1)*2)) (G g), pos) -- WBRr -> 2x as late per round in WB
+    where 
+      ghalf = g+1 `div` 2
+      -- drop on top >R2, and <=2 for odd g to match bracket movement
+      pos = if r > 2 || odd g then 0 else 1
 
 
 -- | Update a duel elimination tournament by passing in the Match, MatchID, and its
 -- associated tournament. Returns an updated tournament with the winner propagated
 -- to the next round, and the loser propagated to the loser bracket if applicable.
 scoreElimination :: Tournament -> MatchId -> Match -> Tournament
-scoreElimination t id@(MID br (R r) (G g)) m@(M pls (Just scrs)) = t''' where
+scoreElimination t id@(MID br (R r) (G g)) m@(M pls (Just scrs)) = t' where
   --could optimize these 2 away by passing in these two params, but premature pointlessness
   e = if Map.null $ Map.filterWithKey (\(MID bri _ _) _ -> bri == LB) t
           then Single else Double
   np = (2*) $ Map.size $ Map.filterWithKey (\(MID bri (R ri) _) _ -> bri == WB && ri == 1) t
   p = (ceiling . logBase 2 . fromIntegral) np
 
-  updatePlayer :: MatchId -> Int -> Int -> Tournament -> (Maybe Match, Tournament)
-  updatePlayer kmid idx replaced tmap = Map.updateLookupWithKey adjustNext kmid tmap where
-    adjustNext _ (M plsi _) = Just (M plsm (woScores plsm)) where
+  updatePlayer :: Int -> Tournament -> (MatchId, Int) -> (Maybe Match, Tournament)
+  updatePlayer replaced tmap (kmid, idx) = Map.updateLookupWithKey fn kmid tmap where
+    fn _ (M plsi _) = Just $ M plsm (woScores plsm) where
       plsm = zipWith (\o i -> if i == idx then replaced else o) plsi [0,1]
 
   -- 1. score given match
   t' = Map.adjust (const m) id t
 
   -- 2. move winner to next round if not a final
-  Just nextMid = progressNext p e id
-  nextPos
-    | br == WB = if odd g then 0 else 1         -- WB game maintains standard alignment always
-    | r == 2*p-2 = 1                            -- LB final winner => bottom of GF
-    | r == 2*p-1 = 0                            -- GF(1) winnner should move to the top [semantic only]
-    | (r == 1 && odd g) || (r > 1 && odd r) = 1 -- winner usually takes the bottom position
-    | otherwise = if odd g then 0 else 1        -- normal progression in even rounds + R1 only
-    -- by placing winner on bottom consistently in odd rounds the bracket moves upward each new refill
-    -- the GF(1) and LB final are special cases that give opposite results to the advanced rule above
-
+  nextm = progressNext p e id
+  
   -- update next match if we're not at the end:
+  -- technically not needed fully if we check if nextMid exists..
   validWbNext = (e == Single && r < p) || (e == Double && r <= p)
   deFinalIsDouble = maximum scrs /= head scrs
   validNext = (br == WB && validWbNext) || (br == LB && (r < 2*p-1 || deFinalIsDouble))
 
   -- adjust and return value to see if propagation of woMarkers are necessary
   -- TODO: if validNext and don't assume nextVal isJust
-  (Just nextVal, t'') = updatePlayer nextMid nextPos (winner m) t'
+  --(Just nextVal, t'') = nextm >>= (updatePlayer (winner m) t')
 
 
   -- 3. move loser to down if we were in winners
-  Just dropMid = progressDrop p id
-  -- drop on top after initial round, and initially for odd g to match bracket movement
-  dropPos = if r > 2 || odd g then 0 else 1
+  dropm = progressDrop p e id
 
   -- update loser in LB if we're not in LB and it's not Single Elim:
   validDrop = br == WB && e == Double
 
   -- adjust and return value to see if propagation of woMarkers are necessary
   -- TODO: if validDrop and don't assume dropVal isJust
-  (Just dropVal, t''') = updatePlayer dropMid dropPos (loser m) t''
+  --(Just dropVal, t''') = dropm >>= (updatePlayer (loser m) t'')
 
   -- 4. Check for WO markers in LBR1 and LBR2
-  checkLbR1 = inLbR 1 dropMid && (isJust . scores) dropVal
-  checkLbR2 = (inLbR 2 dropMid && (isJust . scores) dropVal)
-           || (inLbR 2 nextMid  && (isJust . scores) nextVal)
-  inLbR ro (MID bri (R ri) _) = bri == LB && ri == r
+  --checkLbR1 = inLbR 1 dropMid && (isJust . scores) dropVal
+  --checkLbR2 = (inLbR 2 dropMid && (isJust . scores) dropVal)
+  -- || (inLbR 2 nextMid  && (isJust . scores) nextVal)
+  --inLbR ro (MID bri (R ri) _) = bri == LB && ri == r
 
   {-
   howto do 4 nicely??
@@ -311,6 +314,7 @@ ffaElimination gs adv np
   | adv >= gs = error "Need to eliminate at least one player a match in FFA elimination"
   | adv <= 0 = error "Need >0 players to advance per match in a FFA elimination"
   | otherwise =
+    --TODO: allow crossover matches when there are gaps intelligently..
     let minsize = minimum . map length
 
         nextGroup g = leftover `inGroupsOf` gs where
