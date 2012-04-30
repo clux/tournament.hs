@@ -21,10 +21,12 @@ import Data.Bits (shiftL)
 import Data.Maybe (fromJust, isJust)
 import Control.Monad.State --what? at least State constructor
 import Data.Map (Map)
+import System.IO.Unsafe (unsafePerformIO) -- while developing
 import qualified Data.Map as Map
 
 -- -----------------------------------------------------------------------------
--- Duel Helperstestor n = mapM_ print (Single `eliminationOf` n)
+--testor :: Tournament -> IO()
+testor Tourney { matches = ms } = mapM_ print $ Map.assocs ms
 -- Based on the theory from http://clux.org/entries/view/2407
 -- TODO should somehow ensure 0 < i <= 2^(p-1) in the next fn
 
@@ -109,12 +111,9 @@ type Results = [(Player, Wins)]
 data Elimination = Single | Double deriving (Show, Eq, Ord)
 data GroupSize = GS Int deriving (Show, Eq, Ord)
 data Advancers = Adv Int deriving (Show, Eq, Ord)
-type Size = Int
---data Power = Pow Int deriving (Show, Eq, Ord) -- not public
-
 data Rules = FFA GroupSize Advancers | Duel Elimination
---data Tournament = Tourney Size Rules Matches (Maybe Results)
---(Tourney (Size np) (FFA (GS gs) (Adv adv)) t rs)
+type Size = Int
+
 data Tournament = Tourney {
   size    :: Size
 , rules   :: Rules
@@ -258,49 +257,43 @@ tournament rs@(Duel e) np
     ms = if e == Single then wb else wb `Map.union` lb
 
 
--- Find the MatchId and the position in which to put the winner of current game.
--- Assumes the MatchId is valid.
-progressNext :: Int -> Elimination -> MatchId -> Maybe (MatchId, Int)
-progressNext p e (MID br (R r) (G g))
-  -- Nothing if last Match. NB: WB ends 1 round faster depending on e
-  | r >= 2*p || (br == WB && (r > p || (e == Single && r == p))) = Nothing
-  | br == LB  = Just (MID LB (R (r+1)) (G ghalf), pos)   -- standard LB progression
-  | r == p    = Just (MID LB (R (2*p-1)) (G ghalf), pos) -- WB winner -> GF1 path
-  | otherwise = Just (MID WB (R (r+1)) (G ghalf), pos)   -- standard WB progression
-    where
-      ghalf = g+1 `div` 2
-      pos
-        | br == WB = if odd g then 0 else 1         -- WB maintains standard alignment
-        | r == 2*p-2 = 1                            -- LB final winner => bottom of GF
-        | r == 2*p-1 = 0                            -- GF(1) winnner moves to the top [semantic]
-        | (r == 1 && odd g) || (r > 1 && odd r) = 1 -- winner usually takes the bottom position
-        | otherwise = if odd g then 0 else 1        -- normal progression only in even rounds + R1
-        -- by placing winner on bottom consistently in odd rounds the bracket moves upward each new refill
-        -- the GF(1) and LB final are special cases that give opposite results to the advanced rule above
-
--- Find the MatchId and the position in which to put the loser of current game.
-progressDrop :: Int -> Elimination -> MatchId -> Maybe (MatchId, Int)
-progressDrop p e (MID br (R r) (G g))
-  | br == LB || e == Single || r > p = Nothing
-  | r == 1    = Just (MID LB (R 1) (G ghalf), pos)     -- WBR1 -> r=1 g/2 (LBR1 only gets input from WB)
-  | otherwise = Just (MID LB (R ((r-1)*2)) (G g), pos) -- WBRr -> 2x as late per round in WB
-    where
-      ghalf = g+1 `div` 2
-      -- drop on top >R2, and <=2 for odd g to match bracket movement
-      pos = if r > 2 || odd g then 0 else 1
-
 -- | General score tournament function
 -- Can eventually invoke the state monadic individual functions : )
+-- TODO: make a strict version of this
 score :: Tournament -> MatchId -> Match -> Tournament
-score trn@(Tourney {rules = Duel e}) id m = scoreElimination trn e id m
-score trn@(Tourney {rules = FFA _ _}) id m = undefined
+score trn@(Tourney {rules = Duel e, size = np, matches = ms}) id m =
+  let msUpd = execState (scoreElimination np e id m) ms
+  in trn { matches = msUpd }
+--score trn@(Tourney {rules = FFA _ _}) id m = undefined
+score _ _ _ = undefined
 
+testcase :: IO ()
+testcase = let
+  upd :: MatchId -> Match -> State Tournament ()
+  upd id m = do
+    t <- get
+    put $ score t id m
+    return ()
 
+  manip :: State Tournament ()
+  manip = do
+    --upd (MID WB (R 1) (G 1)) (M [1,7] (Just [1,0]))
+    upd (MID WB (R 1) (G 2)) (M [5,4] (Just [0,1]))
+    --upd (MID WB (R 1) (G 3)) (M [3,6] (Just [1,0]))
+    --upd (MID WB (R 1) (G 4)) (M [7,2] (Just [0,1]))
+
+    upd (MID WB (R 2) (G 1)) (M [1,4] (Just [1,0]))
+    upd (MID WB (R 2) (G 2)) (M [3,2] (Just [0,1]))
+
+    return ()
+
+  in testor $ execState manip $ tournament (Duel Double) 5
 
 -- Private helper to update a duel tournament's match map statefully.
 -- Takes the player number, the (MatchId, Idx) pair from a progress fn to determine location.
-updatePlayer :: Int -> (MatchId, Int) -> State Matches (Maybe Match)
-updatePlayer x (kmid, idx) = do
+updatePlayer :: Int -> Maybe (MatchId, Int) -> State Matches (Maybe Match)
+updatePlayer _ Nothing = return Nothing
+updatePlayer x (Just (kmid, idx)) = do
   tmap <- get
   let (updated, tupd) = Map.updateLookupWithKey updateFn kmid tmap
   put tupd
@@ -309,59 +302,85 @@ updatePlayer x (kmid, idx) = do
         updateFn _ (M plsi _) = Just $ M plsm (woScores plsm) where
           plsm = if idx == 0 then [x, plsi !! 1] else [head plsi, x]
 
---scoreElimination :: Elimination -> MatchId -> Match -> State Matches
 
 -- | Update a duel elimination tournament by passing in the Match, MatchID, and its
 -- associated tournament. Returns an updated tournament with the winner propagated
 -- to the next round, and the loser propagated to the loser bracket if applicable.
-scoreElimination :: Tournament -> Elimination -> MatchId -> Match -> Tournament
-scoreElimination
-  t@(Tourney {size = np, matches = ms})
-  e
-  id@(MID br (R r) (G g))
-  m@(M pls (mscrs)) --guard against not isJust mscrs, then fromJust it
-  = let
-    scrs = fromJust mscrs
-    --used to be: (Tourney np rs@(Duel e) t)
-    -- need to pattern match on rs in this fn lest mess-up
-    -- i.e. need to figure out how to pattern match on records...
-
-    p = pow np
+-- execState to get the updated matches, and if result isJust, things went ok?
+-- privately called function from score, (WITH INITIAL STATE SET!)
+scoreElimination :: Int -> Elimination -> MatchId -> Match -> State Matches (Maybe Match)
+scoreElimination _ _ _ (M _ Nothing) = return Nothing
+scoreElimination np e id m@(M pls (Just scrs)) -- id@(MID br (R r) (G g))
+  = let p = pow np in do
     -- 1. score given match
-    -- result of this should be the initializer for the State
-    ms' = Map.adjust (const m) id ms
+    modify $ Map.adjust (const m) id
 
-    -- 2. move winner to next round if not a final
-    nextm = progressNext p e id
-
-    -- update next match if we're not at the end:
-    -- technically not needed fully if we check if nextMid exists..
-    validWbNext = (e == Single && r < p) || (e == Double && r <= p)
-    deFinalIsDouble = maximum scrs /= head scrs
-    validNext = (br == WB && validWbNext) || (br == LB && (r < 2*p-1 || deFinalIsDouble))
-
-    -- adjust and return value to see if propagation of woMarkers are necessary
-    -- TODO: if validNext and don't assume nextVal isJust
-    --nextm >>= updatePlayer (winner m) t'
-    --(Just nextVal, t'') =
-
+    -- 2. move winner right
+    let nextm = mRight True p id
+    rres <- updatePlayer (winner m) nextm
 
     -- 3. move loser to down if we were in winners
-    dropm = progressDrop p e id
-
-    -- update loser in LB if we're not in LB and it's not Single Elim:
-    validDrop = br == WB && e == Double
-
-    -- adjust and return value to see if propagation of woMarkers are necessary
-    -- TODO: if validDrop and don't assume dropVal isJust
-    --(Just dropVal, t''') = dropm >>= (updatePlayer (loser m) t'')
+    let downm = mDown p id
+    dres <- updatePlayer (loser m) downm
 
     -- 4. Check for WO markers in LBR1 and LBR2
+    {-
+      if (isJust . scores) dres and MID of dres is in LBR1
+        then: dres2 <- updatePlayer (winner dres) nextm2
+        where nextm2 is (mRight False p dresId)
+        if dres2 isJust scores then must check lbr2.. (BUT: then we dont have to do lbr2 any other way)
+        proabaly best to do this first control unanimously then and pass it to the second
+
+      else if (isJust . scores) dres and MID of dres is in LBR2
+        then: updatelayer (winner dres) nextm2
+        where nextm2 is (mRight False p dresId)
+        DO NOT have to update LBR1 as this was now the lbr2 test
+
+      else if (isJust . scores) rres and MID of rres is in LBR2
+        then updateplayer (winner rres) nextm2
+        where nextm2 is (mRight False p rresId)
+    -}
+
+    -- 4.a) Check for WO markers in appropriate LBR1 match
+    --if (isJust dres && (isJust . scores . fromJust) dres
+
     --checkLbR1 = inLbR 1 dropMid && (isJust . scores) dropVal
     --checkLbR2 = (inLbR 2 dropMid && (isJust . scores) dropVal)
     -- || (inLbR 2 nextMid  && (isJust . scores) nextVal)
     --inLbR ro (MID bri (R ri) _) = bri == LB && ri == r
-  in t { matches = ms' }
+
+    return Nothing
+
+    where
+      mRight :: Bool -> Int -> MatchId -> Maybe (MatchId, Int) -- winner moves right to this (MatchId, Position)
+      mRight gf2Check p (MID br (R r) (G g))
+        | r < 1 || g < 1 = error "bad MatchId"
+        -- Nothing if last Match. NB: WB ends 1 round faster depending on e
+        | r >= 2*p || (br == WB && (r > p || (e == Single && r == p))) = Nothing
+        | br == LB  = Just (MID LB (R (r+1)) (G ghalf), pos)   -- standard LB progression
+        | r == 2*p-1 && br == LB && gf2Check && maximum scrs == head scrs = Nothing
+        | r == p    = Just (MID LB (R (2*p-1)) (G ghalf), 0)   -- WB winner -> GF1 path
+        | otherwise = Just (MID WB (R (r+1)) (G ghalf), pos)   -- standard WB progression
+          where
+            ghalf = (g+1) `div` 2
+            pos
+              | br == WB = if odd g then 0 else 1         -- WB maintains standard alignment
+              | r == 2*p-2 = 1                            -- LB final winner => bottom of GF
+              | r == 2*p-1 = 0                            -- GF(1) winnner moves to the top [semantic]
+              | (r == 1 && odd g) || (r > 1 && odd r) = 1 -- winner usually takes the bottom position
+              | otherwise = if odd g then 0 else 1        -- normal progression only in even rounds + R1
+              -- by placing winner on bottom consistently in odd rounds the bracket moves upward each new refill
+              -- the GF(1) and LB final are special cases that give opposite results to the advanced rule above
+
+      mDown :: Int -> MatchId -> Maybe (MatchId, Int) -- loser moves down to this (MatchId, Position)
+      mDown p (MID br (R r) (G g))
+        | br == LB || e == Single || r > p = Nothing
+        | r == 1    = Just (MID LB (R 1) (G ghalf), pos)     -- WBR1 -> r=1 g/2 (LBR1 only gets input from WB)
+        | otherwise = Just (MID LB (R ((r-1)*2)) (G g), pos) -- WBRr -> 2x as late per round in WB
+          where
+            ghalf = (g+1) `div` 2
+            -- drop on top >R2, and <=2 for odd g to match bracket movement
+            pos = if r > 2 || odd g then 0 else 1
 
 
 -- conditions for whether a Tournament is finished: TODO: factor to new fn?
