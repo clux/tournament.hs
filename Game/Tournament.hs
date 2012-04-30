@@ -297,19 +297,19 @@ score trn@(Tourney {rules = FFA _ _}) id m = undefined
 
 
 
--- Helper passed to Map to do the updating conditionally on position.
-updateFn :: Int -> Int -> MatchId -> Match -> Maybe Match
-updateFn idx x  _ (M plsi _) = Just $ M plsm (woScores plsm) where
-  plsm = if idx == 0 then [x, plsi !! 1] else [head plsi, x]
-
 -- Private helper to update a duel tournament's match map statefully.
 -- Takes the player number, the (MatchId, Idx) pair from a progress fn to determine location.
 updatePlayer :: Int -> (MatchId, Int) -> State Matches (Maybe Match)
 updatePlayer x (kmid, idx) = do
   tmap <- get
-  let (updated, tupd) = Map.updateLookupWithKey (updateFn idx x) kmid tmap
+  let (updated, tupd) = Map.updateLookupWithKey updateFn kmid tmap
   put tupd
   return updated
+  where updateFn :: MatchId -> Match -> Maybe Match
+        updateFn _ (M plsi _) = Just $ M plsm (woScores plsm) where
+          plsm = if idx == 0 then [x, plsi !! 1] else [head plsi, x]
+
+--scoreElimination :: Elimination -> MatchId -> Match -> State Matches
 
 -- | Update a duel elimination tournament by passing in the Match, MatchID, and its
 -- associated tournament. Returns an updated tournament with the winner propagated
