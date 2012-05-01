@@ -9,7 +9,7 @@ module Game.Tournament (
 
    -- * Tournament helpers
    , tournament        -- :: Rules -> Size -> Tournament
-   , score             -- :: Tournament -> MatchId -> Match -> Tournament
+   , score             -- :: MatchId -> Maybe [Score] -> Tournament -> Tournament
 
 ) where
 
@@ -260,30 +260,36 @@ tournament rs@(Duel e) np
 -- | General score tournament function
 -- Can eventually invoke the state monadic individual functions : )
 -- TODO: make a strict version of this
-score :: Tournament -> MatchId -> Match -> Tournament
-score trn@(Tourney {rules = Duel e, size = np, matches = ms}) id m =
-  let msUpd = execState (scoreElimination np e id m) ms
+score :: MatchId -> [Score] -> Tournament -> Tournament
+score id sc trn@(Tourney {rules = Duel e, size = np, matches = ms}) =
+  let msUpd = execState (scoreElimination np e id sc) ms
   in trn { matches = msUpd }
---score trn@(Tourney {rules = FFA _ _}) id m = undefined
-score _ _ _ = undefined
+score _ _ _ {-id sc trn@(Tourney {rules = FFA _ _})-}= undefined
 
 testcase :: IO ()
 testcase = let
-  upd :: MatchId -> Match -> State Tournament ()
-  upd id m = do
+  upd :: MatchId -> [Score] -> State Tournament ()
+  upd id sc = do
     t <- get
-    put $ score t id m
+    put $ score id sc t
     return ()
 
   manip :: State Tournament ()
   manip = do
-    --upd (MID WB (R 1) (G 1)) (M [1,7] (Just [1,0]))
-    upd (MID WB (R 1) (G 2)) (M [5,4] (Just [0,1]))
-    --upd (MID WB (R 1) (G 3)) (M [3,6] (Just [1,0]))
-    --upd (MID WB (R 1) (G 4)) (M [7,2] (Just [0,1]))
+    --upd (MID WB (R 1) (G 1)) [1,0]
+    upd (MID WB (R 1) (G 2)) [0,1]
+    --upd (MID WB (R 1) (G 3)) [1,0]
+    --upd (MID WB (R 1) (G 4)) [0,1]
 
-    upd (MID WB (R 2) (G 1)) (M [1,4] (Just [1,0]))
-    upd (MID WB (R 2) (G 2)) (M [3,2] (Just [0,1]))
+    upd (MID WB (R 2) (G 1)) [1,0]
+    upd (MID WB (R 2) (G 2)) [0,1]
+
+    upd (MID LB (R 2) (G 1)) [1,0]
+    upd (MID LB (R 3) (G 1)) [1,0]
+
+    upd (MID WB (R 3) (G 1)) [1,0]
+    upd (MID LB (R 4) (G 1)) [1,0]
+    upd (MID LB (R 5) (G 1)) [0,1] -- gf1
 
     return ()
 
@@ -291,67 +297,69 @@ testcase = let
 
 -- Private helper to update a duel tournament's match map statefully.
 -- Takes the player number, the (MatchId, Idx) pair from a progress fn to determine location.
-updatePlayer :: Int -> Maybe (MatchId, Int) -> State Matches (Maybe Match)
-updatePlayer _ Nothing = return Nothing
-updatePlayer x (Just (kmid, idx)) = do
+playerInsert :: Maybe (MatchId, Int) -> Int -> State Matches (Maybe Match)
+playerInsert Nothing _ = return Nothing
+playerInsert (Just (kmid, idx)) x = do
   tmap <- get
-  let (updated, tupd) = Map.updateLookupWithKey updateFn kmid tmap
+  let (updated, tupd) = Map.updateLookupWithKey updFn kmid tmap
   put tupd
   return updated
-  where updateFn :: MatchId -> Match -> Maybe Match
-        updateFn _ (M plsi _) = Just $ M plsm (woScores plsm) where
-          plsm = if idx == 0 then [x, plsi !! 1] else [head plsi, x]
-
+    where updFn _ (M plsi _) = Just $ M plsm (woScores plsm) where
+            plsm = if idx == 0 then [x, plsi !! 1] else [head plsi, x]
 
 -- | Update a duel elimination tournament by passing in the Match, MatchID, and its
 -- associated tournament. Returns an updated tournament with the winner propagated
 -- to the next round, and the loser propagated to the loser bracket if applicable.
--- execState to get the updated matches, and if result isJust, things went ok?
--- privately called function from score, (WITH INITIAL STATE SET!)
-scoreElimination :: Int -> Elimination -> MatchId -> Match -> State Matches (Maybe Match)
-scoreElimination _ _ _ (M _ Nothing) = return Nothing
-scoreElimination np e id m@(M pls (Just scrs)) -- id@(MID br (R r) (G g))
+scoreElimination :: Int -> Elimination -> MatchId -> [Score] -> State Matches (Maybe Match)
+scoreElimination np e id scrs
   = let p = pow np in do
+    -- 0. verify match exists
+    (Just (M pls _)) <- gets (Map.lookup id) -- short circuits if isNothing
+    let m = M pls (Just scrs)
+
     -- 1. score given match
     modify $ Map.adjust (const m) id
 
     -- 2. move winner right
-    let nextm = mRight True p id
-    rres <- updatePlayer (winner m) nextm
+    let nprog = mRight True p id
+    nres <- playerInsert nprog $ winner m
 
     -- 3. move loser to down if we were in winners
-    let downm = mDown p id
-    dres <- updatePlayer (loser m) downm
+    let dprog = mDown p id
+    dres <- playerInsert dprog $ loser m
 
-    -- 4. Check for WO markers in LBR1 and LBR2
-    {-
-      if (isJust . scores) dres and MID of dres is in LBR1
-        then: dres2 <- updatePlayer (winner dres) nextm2
-        where nextm2 is (mRight False p dresId)
-        if dres2 isJust scores then must check lbr2.. (BUT: then we dont have to do lbr2 any other way)
-        proabaly best to do this first control unanimously then and pass it to the second
+    -- 4. WO Checks in LB (R {1,2})
+    let r1checkp = woCheck p dprog dres
+    -- a) Check if dres was scored in LBR1, place its winner in LBR2
+    if isJust r1checkp
+      then do
+        let r1check = fromJust r1checkp
+        lbr2res <- uncurry playerInsert $ r1check
+        let r2check = woCheck p (fst r1check) lbr2res
+        -- b) Check if lb2res was WO scored, place its winner in LBR3
+        if isJust r2check
+          then do
+            uncurry playerInsert $ fromJust r2check
+          else return Nothing
+      else do
+        let r2check = woCheck p nprog nres
+        -- c) Check if mprog was WO scored in LBR2, place winner in LBR3
+        if isJust r2check
+          then do
+            uncurry playerInsert $ fromJust r2check
+          else return Nothing
 
-      else if (isJust . scores) dres and MID of dres is in LBR2
-        then: updatelayer (winner dres) nextm2
-        where nextm2 is (mRight False p dresId)
-        DO NOT have to update LBR1 as this was now the lbr2 test
-
-      else if (isJust . scores) rres and MID of rres is in LBR2
-        then updateplayer (winner rres) nextm2
-        where nextm2 is (mRight False p rresId)
-    -}
-
-    -- 4.a) Check for WO markers in appropriate LBR1 match
-    --if (isJust dres && (isJust . scores . fromJust) dres
-
-    --checkLbR1 = inLbR 1 dropMid && (isJust . scores) dropVal
-    --checkLbR2 = (inLbR 2 dropMid && (isJust . scores) dropVal)
-    -- || (inLbR 2 nextMid  && (isJust . scores) nextVal)
-    --inLbR ro (MID bri (R ri) _) = bri == LB && ri == r
-
-    return Nothing
+    return $ Just m
 
     where
+      -- given (power,) _prog and _res produce a new prog and its winner to send to playerInsert
+      woCheck :: Int -> Maybe (MatchId, Int) -> Maybe Match -> Maybe (Maybe (MatchId, Int), Int)
+      woCheck p (Just (mid, _)) (Just mi)
+        | winner mi == 0 = Nothing
+        | otherwise = Just (mRight False p mid, winner mi)
+      woCheck _ _ _ = Nothing
+
+
       mRight :: Bool -> Int -> MatchId -> Maybe (MatchId, Int) -- winner moves right to this (MatchId, Position)
       mRight gf2Check p (MID br (R r) (G g))
         | r < 1 || g < 1 = error "bad MatchId"
