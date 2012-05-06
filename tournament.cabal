@@ -28,8 +28,8 @@ library
   exposed-modules : Game.Tournament
   build-depends   :
         base          == 4.*
-      , mtl           == 2.0.1.*
-      , containers    == 0.4.*
+      , mtl           == 2.0.*
+      , containers    == 0.5.*
   ghc-options     : -W
 -------------------------------------------------------------------------------
 Test-Suite test-tournament

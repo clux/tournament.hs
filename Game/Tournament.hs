@@ -13,31 +13,23 @@ module Game.Tournament (
    , tournament        -- :: Rules -> Size -> Tournament
    , score             -- :: MatchId -> Maybe [Score] -> Tournament -> Tournament
 
+   , testcase
 ) where
 
 import Data.Char (intToDigit, digitToInt)
 import Numeric (showIntAtBase, readInt)
-import Data.List (sort, sortBy, groupBy, genericTake)
+import Data.List (sort, sortBy, group, groupBy, genericTake)
 import Data.Ord (comparing)
 import Data.Function (on)
 import Data.Bits (shiftL)
-import Data.Maybe (fromJust, isJust, fromMaybe)
-import Control.Monad.State --what? at least State constructor
+import Data.Maybe (fromJust, isJust, fromMaybe, listToMaybe)
+import Control.Monad.State --TODO: only what needed
 import Data.Map (Map)
+import qualified Data.Map.Lazy as Map
 import Control.Arrow ((&&&), second)
 import System.IO.Unsafe (unsafePerformIO) -- while developing
-import qualified Data.Map as Map
 
 -- -----------------------------------------------------------------------------
-testor :: Tournament -> IO ()
-testor Tourney { matches = ms, results = rs } = do
-  mapM_ print $ Map.assocs ms
-  if isJust rs
-    then do
-      print "results:"
-      mapM_ print $ fromJust rs
-    else do print "no results"
-
 -- TODO should somehow ensure 0 < i <= 2^(p-1) in the next fn
 
 -- | Computes both the player seeds (in order) for a duel elimiation match.
@@ -105,7 +97,10 @@ gameNum (MID _ _ (G g)) = g
 type Player = Int
 type Score = Int
 -- if scored, scored all at once - zip gives the correct association between scores and players
-data Match = M [Player] (Maybe [Score]) deriving (Show, Eq)
+data Match = Match {
+  players :: [Int]
+, scores  :: Maybe [Score]
+} deriving (Show, Eq)
 
 
 type Matches = Map MatchId Match
@@ -114,7 +109,9 @@ type Matches = Map MatchId Match
 -- Ordered set of winners. Ordering is descending, i.e. head is the winner.
 -- NB: more wins =/> better placement (LB player may have more wins than GF winner from WB for example).
 type Wins = Int
-type Results = [(Player, Wins)]
+type Placement = Int
+type Results = [(Player, Placement, Wins)]
+--type Results = [(Player, Placement)]
 data Elimination = Single | Double deriving (Show, Eq, Ord)
 data GroupSize = GS Int deriving (Show, Eq, Ord)
 data Advancers = Adv Int deriving (Show, Eq, Ord)
@@ -128,64 +125,78 @@ data Tournament = Tourney {
 , results :: Maybe Results
 }
 
+testor :: Tournament -> IO ()
+testor Tourney { matches = ms, results = rs } = do
+  mapM_ print $ Map.assocs ms
+  if isJust rs
+    then do
+      print "results:"
+      mapM_ print $ fromJust rs
+    else do print "no results"
+
 -- throws if bad tournament
 -- NB: tournament does not have updated Mathces, as this is called mid score
 -- uses supplied extra argument for updated matches
 makeResults :: Tournament -> Matches -> Maybe Results
 makeResults (Tourney {rules = Duel e, size = np}) ms = rs where
   p = pow np
-  wbf@(M _ wbfsc) = fromJust $ Map.lookup (MID WB (R p) (G 1)) ms
-  gf1@(M _ gf1sc) = fromJust $ Map.lookup (MID LB (R (2*p-1)) (G 1)) ms
-  gf2@(M _ gf2sc) = fromJust $ Map.lookup (MID LB (R (2*p)) (G 1)) ms
+  --bf@(M _ bfsc) = fromJust $ Map.lookup (MID LB (R 1) (G 1)) ms bf in R 1?
+  wbf@(Match _ wbfsc) = fromJust $ Map.lookup (MID WB (R p) (G 1)) ms
   rs = if e == Single && isJust wbfsc
     then Just $ scorify (winner wbf)
-    else if e == Double && isJust gf2sc
-      then Just $ scorify (winner gf2) 
-      else if e == Double && isJust gf1sc && maximum (fromJust gf1sc) == head (fromJust gf1sc)
-        then Just $ scorify (winner gf1)
-        else Nothing
-  
-  -- maps (last bracket's) maxround to the tie-position
-  toPosition :: Elimination -> Int -> Int
-  toPosition Double maxlbr = if metric <= 4 then metric else 2^(k+1) + 1 + oddExtra where
+    else let
+      gf1@(Match _ gf1sc) = fromJust $ Map.lookup (MID LB (R (2*p-1)) (G 1)) ms
+      gf2@(Match _ gf2sc) = fromJust $ Map.lookup (MID LB (R (2*p)) (G 1)) ms
+      in if e == Double && isJust gf2sc
+        then Just $ scorify (winner gf2) 
+        else if e == Double && isJust gf1sc && maximum (fromJust gf1sc) == head (fromJust gf1sc)
+          then Just $ scorify (winner gf1)
+          else Nothing
+    
+  -- maps (last bracket's) maxround to the tie-placement
+  toPlacement :: Elimination -> Int -> Int
+  toPlacement Double maxlbr = if metric <= 4 then metric else 2^(k+1) + 1 + oddExtra where
     metric = 2*p + 1 - maxlbr
     r = metric - 4
     k = (r+1) `div` 2
     oddExtra = if odd r then 0 else 2^k
-  toPosition Single maxr = if metric <= 2 then metric else 2^r + 1 where
+  toPlacement Single maxr = if metric <= 2 then metric else 2^r + 1 where
     metric = p+1 - maxr
     r = metric - 2
-    
-
-  -- TODO: need to fold Matches to get nr of wins
-  -- thus we can return [(Player, Pos, Wins)] sorted by Pos descending (Pos non-unique)
 
   -- scoring function assumes winner has been calculated so all that remains is:
   -- sort by maximum (last bracket's) round number descending, possibly flipping winners
   scorify :: Int -> Results
-  scorify winner = ps where
-    ps = map (second (toPosition e))
-      . flipFirst winner
+  scorify w = map result placements where
+    result (p, pos) = (p, pos, wi) where
+      wi = fromMaybe 0 . listToMaybe . map snd . filter ((==p) . fst) $ wins
+
+    wins = map (head &&& length)
+      . group
+      . sort
+      . filter (>0)
+      . Map.foldr ((:) . winner) []
+      . Map.filter (all (>0) . players) $ ms
+
+    placements = map (second (toPlacement e))
+      . flipFirst
       . sortBy (flip compare `on` snd)
-      . map joinMax
+      . map (fst . head &&& foldr (max . snd) 0)
       . groupBy ((==) `on` fst)
       . sortBy (comparing fst)
       . filter ((>0) . fst) 
       . Map.foldrWithKey rfold [] $ ms
-    
-    rfold (MID br (R r) _) (M [a, b] _) acc = 
+
+    rfold (MID br (R r) _) m acc =
       if e == Single || (e == Double && br == LB)
-        then (a, r) : (b, r) : acc
+        then (++ acc) . map (id &&& const r) $ players m
         else acc
-    rfold _ _ _ = error "/=2 players in match sent to rfold"
 
-    flipFirst w (x:y:xs) = if fst x == w then x : y : xs else y : x : xs
-    flipFirst _ _ = error "<2 players in Match sent to flipFirst"
+    flipFirst (x:y:xs) = if fst x == w then x : y : xs else y : x : xs
+    flipFirst _ = error "<2 players in Match sent to flipFirst"
     -- if bronzeFinal then need to flip 3 and 4 possibly as well
-
-    joinMax ls@(x:_) = (fst x, foldr (max . snd) 1 ls)
-    joinMax _ = error "empty list in joinMax"
-
+    -- if this is scanned for loosely then we can score regardless of this being played
+    -- otherwise we have a proper tie at 3 like normal
 
 
 
@@ -196,14 +207,15 @@ makeResults (Tourney {rules = FFA (GS _) (Adv _), size = _}) _ = undefined
 
 -- these are rules agnostic
 -- TODO: maybe export this?
-scores :: Match -> [Int]
-scores (M pls Nothing) = replicate (length pls) 0
-scores (M pls (Just scrs)) = map fst $ reverse $ sortBy (comparing snd) $ zip pls scrs
+sortedScores :: Match -> [Int]
+sortedScores (Match pls Nothing) = replicate (length pls) 0
+sortedScores (Match pls (Just scrs)) =
+  map fst . reverse . sortBy (comparing snd) . zip pls $ scrs
 
 -- these can be exported
 winner, loser :: Match -> Int
-winner = head . scores
-loser = last . scores
+winner = head . sortedScores
+loser = last . sortedScores
 
 -- duel specific maybe exportable
 --duelPower :: Tournament -> Int
@@ -246,7 +258,7 @@ tournament rs@(FFA (GS gs) (Adv adv)) np
 
         -- finally convert raw group lists to matches
         makeRound grp r = zipWith makeMatch grp [1..] where
-          makeMatch g i = (MID WB (R r) (G i), M g Nothing)
+          makeMatch g i = (MID WB (R r) (G i), Match g Nothing)
 
         ms = Map.fromList $ concat $ zipWith makeRound (final : grps) [1..]
     in Tourney { size = np, rules = rs, matches = ms, results = Nothing }
@@ -267,31 +279,31 @@ tournament rs@(Duel e) np
 
     -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
     markWO (x, y) = map (\a -> if a <= np then a else -1) [x,y]
-    makeWbR1 i = (l, M pl s) where
+    makeWbR1 i = (l, Match pl s) where
       l = MID WB (R 1) (G i)
       pl = markWO $ seeds p i
       s = woScores pl
 
     -- make WBR2 shells by using paired WBR1 results to propagate walkover winners
-    makeWbR2 ((_, m1), (l2, m2)) = (l, M pl s) where
+    makeWbR2 ((_, m1), (l2, m2)) = (l, Match pl s) where
       l = MID WB (R 2) (G (gameNum l2 `div` 2))
       pl = map winner [m1, m2]
       s = woScores pl
 
     -- make LBR1 shells by using paired WBR1 results to propagate WO markers down
-    makeLbR1 ((_, m1), (l2, m2)) = (l, M pl s) where
+    makeLbR1 ((_, m1), (l2, m2)) = (l, Match pl s) where
       l = MID LB (R 1) (G (gameNum l2 `div` 2))
       pl = map loser [m1, m2]
       s = woScores pl
 
     -- make LBR2 shells by using LBR1 results to propagate WO markers if 2x
-    makeLbR2 (l1, m1) = (l, M pl Nothing) where
+    makeLbR2 (l1, m1) = (l, Match pl Nothing) where
       l = MID LB (R 2) (G (gameNum l1))
       plw = winner m1
       pl = if odd (gameNum l) then [0, plw] else [plw, 0]
 
     -- remaining rounds empty
-    emptyMatch l = (l, M [0,0] Nothing)
+    emptyMatch l = (l, Match [0,0] Nothing)
     makeWbRound k = map makeWbMatch [1..2^(p-k)] where
       makeWbMatch i = emptyMatch $ MID WB (R k) (G i)
 
@@ -364,8 +376,8 @@ score _ _ _ {-id sc trn@(Tourney {rules = FFA _ _, matches = ms}) -}= scoreFFA
 scoreDuel :: Int -> Elimination -> MatchId -> [Score] -> State Matches (Maybe Match)
 scoreDuel p e mid scrs = do
   -- 0. get involved players / verify match exists
-  (Just (M pls _)) <- gets (Map.lookup mid) -- NB: throws if invalid MID
-  let m = M pls (Just scrs)
+  (Just (Match pls _)) <- gets (Map.lookup mid) -- NB: throws if invalid MID
+  let m = Match pls (Just scrs)
 
   -- 1. score given match
   modify $ Map.adjust (const m) mid
@@ -398,8 +410,8 @@ scoreDuel p e mid scrs = do
       let (updated, tupd) = Map.updateLookupWithKey updFn mid tmap
       put tupd
       return updated
-        where updFn _ (M plsi _) = Just $ M plsm (woScores plsm) where
-                plsm = if idx == 0 then [x, plsi !! 1] else [head plsi, x]
+        where updFn _ (Match plsi _) = Just $ Match plsm (woScores plsm) where
+                plsm = if idx == 0 then [x, last plsi] else [head plsi, x]
 
     -- given tourney power, progress results, and insert results, of previous
     -- if it was woScored in playerInsert, produce new (progress, winner) pair
