@@ -1,3 +1,5 @@
+-- Based on the theory from http://clux.org/entries/view/2407
+
 module Game.Tournament (
    -- * Duel helpers
      seeds             -- :: Int -> Int -> (Int, Int)
@@ -22,11 +24,12 @@ import Data.Bits (shiftL)
 import Data.Maybe (fromJust, isJust, fromMaybe)
 import Control.Monad.State --what? at least State constructor
 import Data.Map (Map)
+import Control.Arrow ((&&&), second)
 import System.IO.Unsafe (unsafePerformIO) -- while developing
 import qualified Data.Map as Map
 
 -- -----------------------------------------------------------------------------
---testor :: Tournament -> IO()
+testor :: Tournament -> IO ()
 testor Tourney { matches = ms, results = rs } = do
   mapM_ print $ Map.assocs ms
   if isJust rs
@@ -34,7 +37,7 @@ testor Tourney { matches = ms, results = rs } = do
       print "results:"
       mapM_ print $ fromJust rs
     else do print "no results"
--- Based on the theory from http://clux.org/entries/view/2407
+
 -- TODO should somehow ensure 0 < i <= 2^(p-1) in the next fn
 
 -- | Computes both the player seeds (in order) for a duel elimiation match.
@@ -135,27 +138,39 @@ makeResults (Tourney {rules = Duel e, size = np}) ms = rs where
   gf1@(M _ gf1sc) = fromJust $ Map.lookup (MID LB (R (2*p-1)) (G 1)) ms
   gf2@(M _ gf2sc) = fromJust $ Map.lookup (MID LB (R (2*p)) (G 1)) ms
   rs = if e == Single && isJust wbfsc
-    then Just $ scorify (winner wbf) ms
+    then Just $ scorify (winner wbf)
     else if e == Double && isJust gf2sc
-      then Just $ scorify (winner gf2) ms
+      then Just $ scorify (winner gf2) 
       else if e == Double && isJust gf1sc && maximum (fromJust gf1sc) == head (fromJust gf1sc)
-        then Just $ scorify (winner gf1) ms
+        then Just $ scorify (winner gf1)
         else Nothing
   
-  -- TODO: need to map scorify's index to an actual position
+  -- maps (last bracket's) maxround to the tie-position
+  toPosition :: Elimination -> Int -> Int
+  toPosition Double maxlbr = if metric <= 4 then metric else 2^(k+1) + 1 + oddExtra where
+    metric = 2*p + 1 - maxlbr
+    r = metric - 4
+    k = (r+1) `div` 2
+    oddExtra = if odd r then 0 else 2^k
+  toPosition Single maxr = if metric <= 2 then metric else 2^r + 1 where
+    metric = p+1 - maxr
+    r = metric - 2
+    
+
   -- TODO: need to fold Matches to get nr of wins
   -- thus we can return [(Player, Pos, Wins)] sorted by Pos descending (Pos non-unique)
 
   -- scoring function assumes winner has been calculated so all that remains is:
   -- sort by maximum (last bracket's) round number descending, possibly flipping winners
-  scorify :: Int -> Matches -> Results
-  scorify winner ms = ps where
-    ps = filter ((>0) . fst) 
+  scorify :: Int -> Results
+  scorify winner = ps where
+    ps = map (second (toPosition e))
       . flipFirst winner
       . sortBy (flip compare `on` snd)
       . map joinMax
       . groupBy ((==) `on` fst)
       . sortBy (comparing fst)
+      . filter ((>0) . fst) 
       . Map.foldrWithKey rfold [] $ ms
     
     rfold (MID br (R r) _) (M [a, b] _) acc = 
@@ -166,9 +181,12 @@ makeResults (Tourney {rules = Duel e, size = np}) ms = rs where
 
     flipFirst w (x:y:xs) = if fst x == w then x : y : xs else y : x : xs
     flipFirst _ _ = error "<2 players in Match sent to flipFirst"
+    -- if bronzeFinal then need to flip 3 and 4 possibly as well
 
     joinMax ls@(x:_) = (fst x, foldr (max . snd) 1 ls)
     joinMax _ = error "empty list in joinMax"
+
+
 
 
 makeResults (Tourney {rules = FFA (GS _) (Adv _), size = _}) _ = undefined
@@ -288,6 +306,7 @@ tournament rs@(Duel e) np
     lbr1 = map makeLbR1 wbr1pairs
     lbr2 = map makeLbR2 lbr1
     wbrest = concatMap makeWbRound [3..p]
+    --TODO: bronze final special
 
     gf1 = MID LB (R (2*p-1)) (G 1)
     gf2 = MID LB (R (2*p)) (G 1)
@@ -323,7 +342,6 @@ testcase = let
     upd (MID WB (R 3) (G 1)) [1,0]
     upd (MID LB (R 4) (G 1)) [1,0]
     upd (MID LB (R 5) (G 1)) [1,0] -- gf1
-
 
     return ()
 
