@@ -26,7 +26,7 @@ import Data.Maybe (fromJust, isJust, fromMaybe, listToMaybe)
 import Control.Monad.State --TODO: only what needed
 import Data.Map (Map)
 import qualified Data.Map.Lazy as Map
-import Control.Arrow ((&&&), second)
+import Control.Arrow ((&&&), (>>>), second)
 import System.IO.Unsafe (unsafePerformIO) -- while developing
 
 -- -----------------------------------------------------------------------------
@@ -111,6 +111,12 @@ type Matches = Map MatchId Match
 type Wins = Int
 type Placement = Int
 type Results = [(Player, Placement, Wins)]
+{-data Results = Results {
+  player    :: Int
+, placement :: Int
+, wins      :: Int
+} deriving (Show)-}
+
 --type Results = [(Player, Placement)]
 data Elimination = Single | Double deriving (Show, Eq, Ord)
 data GroupSize = GS Int deriving (Show, Eq, Ord)
@@ -130,7 +136,7 @@ testor Tourney { matches = ms, results = rs } = do
   mapM_ print $ Map.assocs ms
   if isJust rs
     then do
-      print "results:"
+      print "results: (Player, Placement, Wins)"
       mapM_ print $ fromJust rs
     else do print "no results"
 
@@ -138,65 +144,78 @@ testor Tourney { matches = ms, results = rs } = do
 -- NB: tournament does not have updated Mathces, as this is called mid score
 -- uses supplied extra argument for updated matches
 makeResults :: Tournament -> Matches -> Maybe Results
-makeResults (Tourney {rules = Duel e, size = np}) ms = rs where
-  p = pow np
-  --bf@(M _ bfsc) = fromJust $ Map.lookup (MID LB (R 1) (G 1)) ms bf in R 1?
-  wbf@(Match _ wbfsc) = fromJust $ Map.lookup (MID WB (R p) (G 1)) ms
-  rs = if e == Single && isJust wbfsc
-    then Just $ scorify (winner wbf)
-    else let
-      gf1@(Match _ gf1sc) = fromJust $ Map.lookup (MID LB (R (2*p-1)) (G 1)) ms
-      gf2@(Match _ gf2sc) = fromJust $ Map.lookup (MID LB (R (2*p)) (G 1)) ms
-      in if e == Double && isJust gf2sc
-        then Just $ scorify (winner gf2) 
-        else if e == Double && isJust gf1sc && maximum (fromJust gf1sc) == head (fromJust gf1sc)
-          then Just $ scorify (winner gf1)
+makeResults (Tourney {rules = Duel e, size = np}) ms
+  | e == Single = let
+    --bf@(M _ bfsc) = fromJust $ Map.lookup (MID LB (R 1) (G 1)) ms bf in R 1?
+    wbf@(Match _ wbfsc) = fromJust $ Map.lookup (MID WB (R p) (G 1)) ms
+    in  if isJust wbfsc
+          then Just . scorify $ winner wbf
           else Nothing
-    
-  -- maps (last bracket's) maxround to the tie-placement
-  toPlacement :: Elimination -> Int -> Int
-  toPlacement Double maxlbr = if metric <= 4 then metric else 2^(k+1) + 1 + oddExtra where
-    metric = 2*p + 1 - maxlbr
-    r = metric - 4
-    k = (r+1) `div` 2
-    oddExtra = if odd r then 0 else 2^k
-  toPlacement Single maxr = if metric <= 2 then metric else 2^r + 1 where
-    metric = p+1 - maxr
-    r = metric - 2
+  | e == Double = let
+    gf1@(Match _ gf1sc) = fromJust $ Map.lookup (MID LB (R (2*p-1)) (G 1)) ms
+    gf2@(Match _ gf2sc) = fromJust $ Map.lookup (MID LB (R (2*p)) (G 1)) ms
+    in  if isJust gf2sc
+          then Just . scorify $ winner gf2
+          else if isJust gf1sc && maximum (fromJust gf1sc) == head (fromJust gf1sc)
+            then Just . scorify $ winner gf1
+            else Nothing
+  where
+    p = pow np
 
-  -- scoring function assumes winner has been calculated so all that remains is:
-  -- sort by maximum (last bracket's) round number descending, possibly flipping winners
-  scorify :: Int -> Results
-  scorify w = map result placements where
-    result (p, pos) = (p, pos, wi) where
-      wi = fromMaybe 0 . listToMaybe . map snd . filter ((==p) . fst) $ wins
+    -- maps (last bracket's) maxround to the tie-placement
+    toPlacement :: Elimination -> Int -> Int
+    toPlacement Double maxlbr = if metric <= 4 then metric else 2^(k+1) + 1 + oddExtra where
+      metric = 2*p + 1 - maxlbr
+      r = metric - 4
+      k = (r+1) `div` 2
+      oddExtra = if odd r then 0 else 2^k
+    toPlacement Single maxr = if metric <= 2 then metric else 2^r + 1 where
+      metric = p+1 - maxr
+      r = metric - 2
 
-    wins = map (head &&& length)
-      . group
-      . sort
-      . filter (>0)
-      . Map.foldr ((:) . winner) []
-      . Map.filter (all (>0) . players) $ ms
+    -- scoring function assumes winner has been calculated so all that remains is:
+    -- sort by maximum (last bracket's) round number descending, possibly flipping winners
+    scorify :: Int -> Results
+    scorify w = map result placements where
+      result (pl, pos) = (pl, pos, wi) where
+        extract = fromMaybe 0 . listToMaybe . map snd . filter ((==pl) . fst)
+        wi = extract wins
+        sSum = extract scoreSum
+      wins = map (head &&& length)
+        . group
+        . sort
+        -- not filtering for zero winners as they should not exist if scorify called
+        . Map.foldr ((:) . winner) []
+        . Map.filter (all (>0) . players) $ ms
+      
+      scoreSum = map (fst . head &&& foldr ((+) . snd) 0)
+        . groupBy ((==) `on` fst) . sortBy (comparing fst)
+        . concat
+        . Map.foldr ((:) . ((players &&& fromJust . scores) >>> uncurry zip)) []
+        -- TODO: arrow fromJust may cause wrongs if matches are updated before possible
+        . Map.filter (all (>0) . players) $ ms
 
-    placements = map (second (toPlacement e))
-      . flipFirst
-      . sortBy (flip compare `on` snd)
-      . map (fst . head &&& foldr (max . snd) 0)
-      . groupBy ((==) `on` fst)
-      . sortBy (comparing fst)
-      . filter ((>0) . fst) 
-      . Map.foldrWithKey rfold [] $ ms
+      placements = fixFirst
+        . sortBy (compare `on` snd)
+        . map (second (toPlacement e))
+        . map (fst . head &&& foldr (max . snd) 1)
+        . groupBy ((==) `on` fst)
+        . sortBy (comparing fst)
+        . filter ((>0) . fst) 
+        . Map.foldrWithKey rfold [] $ ms
 
-    rfold (MID br (R r) _) m acc =
-      if e == Single || (e == Double && br == LB)
-        then (++ acc) . map (id &&& const r) $ players m
-        else acc
+      rfold (MID br (R r) _) m acc =
+        if e == Single || (e == Double && br == LB)
+          then (++ acc) . map (id &&& const r) $ players m
+          else acc
 
-    flipFirst (x:y:xs) = if fst x == w then x : y : xs else y : x : xs
-    flipFirst _ = error "<2 players in Match sent to flipFirst"
-    -- if bronzeFinal then need to flip 3 and 4 possibly as well
-    -- if this is scanned for loosely then we can score regardless of this being played
-    -- otherwise we have a proper tie at 3 like normal
+      -- reorder start and make sure 2nd element has second place, as toPlacement cant distinguish
+      fixFirst (x@(a,_):y@(b,_):rs) = if a == w then x : (b,2) : rs else y : (a,2) : rs
+      fixFirst _ = error "<2 players in Match sent to flipFirst"
+
+      -- if bronzeFinal then need to flip 3 and 4 possibly as well
+      -- if this is scanned for loosely then we can score regardless of this being played
+      -- otherwise we have a proper tie at 3 like normal
 
 
 
@@ -353,7 +372,8 @@ testcase = let
 
     upd (MID WB (R 3) (G 1)) [1,0]
     upd (MID LB (R 4) (G 1)) [1,0]
-    upd (MID LB (R 5) (G 1)) [1,0] -- gf1
+    upd (MID LB (R 5) (G 1)) [0,3] -- gf1
+    upd (MID LB (R 6) (G 1)) [1,2]
 
     return ()
 
@@ -378,27 +398,29 @@ scoreDuel p e mid scrs = do
   -- 0. get involved players / verify match exists
   (Just (Match pls _)) <- gets (Map.lookup mid) -- NB: throws if invalid MID
   let m = Match pls (Just scrs)
+  if any (<=0) pls
+    then return Nothing -- never pre-score a match without both players in it
+    else do -- guarding ensures we can never have an unscored match before calling scorify
+      -- 1. score given match
+      modify $ Map.adjust (const m) mid
 
-  -- 1. score given match
-  modify $ Map.adjust (const m) mid
+      -- 2. move winner right
+      let nprog = mRight True p mid
+      nres <- playerInsert nprog $ winner m
 
-  -- 2. move winner right
-  let nprog = mRight True p mid
-  nres <- playerInsert nprog $ winner m
+      -- 3. move loser to down if we were in winners
+      let dprog = mDown p mid
+      dres <- playerInsert dprog $ loser m
 
-  -- 3. move loser to down if we were in winners
-  let dprog = mDown p mid
-  dres <- playerInsert dprog $ loser m
+      -- 4. check if loser needs WO from LBR1
+      let dprog2 = woCheck p dprog dres
+      uncurry playerInsert $ fromMaybe (Nothing, 0) dprog2
 
-  -- 4. check if loser needs WO from LBR1
-  let dprog2 = woCheck p dprog dres
-  uncurry playerInsert $ fromMaybe (Nothing, 0) dprog2
+      -- 5. check if winner needs WO from LBR2
+      let nprog2 = woCheck p nprog nres
+      uncurry playerInsert $ fromMaybe (Nothing, 0) nprog2
 
-  -- 5. check if winner needs WO from LBR2
-  let nprog2 = woCheck p nprog nres
-  uncurry playerInsert $ fromMaybe (Nothing, 0) nprog2
-
-  return $ Just m
+      return $ Just m
 
   where
     -- insert player x into list index idx of mid's players, and woScore it
@@ -445,7 +467,9 @@ scoreDuel p e mid scrs = do
     -- down progress fn : loser moves down to (MatchId, Position)
     mDown :: Int -> MatchId -> Maybe (MatchId, Int)
     mDown p (MID br (R r) (G g))
-      | br == LB || e == Single || r > p = Nothing
+      | e == Single = Nothing
+      | r == 2*p-1 = Just (MID LB (R (2*p)) (G 1), 1) -- GF(1) loser moves to the bottom
+      | br == LB || r > p = Nothing
       | r == 1    = Just (MID LB (R 1) (G ghalf), pos)     -- WBR1 -> r=1 g/2 (LBR1 only gets input from WB)
       | otherwise = Just (MID LB (R ((r-1)*2)) (G g), pos) -- WBRr -> 2x as late per round in WB
         where
