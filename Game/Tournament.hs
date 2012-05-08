@@ -141,7 +141,7 @@ testor Tourney { matches = ms, results = rs } = do
     then do
       print "results: (Player, Placement, Wins, ScoreSum)"
       mapM_ print $ fromJust rs
-    else do print "no results"
+    else print "no results"
 
 -- throws if bad tournament
 -- NB: tournament does not have updated Mathces, as this is called mid score
@@ -197,8 +197,7 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
 
       placements = fixFirst
         . sortBy (comparing snd)
-        . map (second (toPlacement e))
-        . map (fst . head &&& foldr (max . snd) 1)
+        . map (second (toPlacement e) . (fst . head &&& foldr (max . snd) 1))
         . groupBy ((==) `on` fst)
         . sortBy (comparing fst)
         . Map.foldrWithKey rfold [] $ realms
@@ -317,11 +316,11 @@ tournament rs@(Duel e) np
 
     -- construct (definitely) empty rounds
     wbRest = concatMap makeRound [3..p] where
-      makeRound r = map ((MID WB (R r)) . G) [1..2^(p-r)]
+      makeRound r = map (MID WB (R r) . G) [1..2^(p-r)]
       --bfm = MID LB (R 1) (G 1) -- bronze final here, exception
 
-    lbRest = (map gfms [2*p-1, 2*p]) ++ concatMap makeRound [3..2*p-2] where
-      makeRound r = map ((MID LB (R r)) . G) [1..(2^) $ p - 1 - (r+1) `div` 2]
+    lbRest = map gfms [2*p-1, 2*p] ++ concatMap makeRound [3..2*p-2] where
+      makeRound r = map (MID LB (R r) . G) [1..(2^) $ p - 1 - (r+1) `div` 2]
       gfms r = MID LB (R r) (G 1)
 
     toMap = Map.fromSet (const (Match [0,0] Nothing)) . Set.fromList
@@ -382,22 +381,44 @@ testcase = let
 -- TODO: documentation absorb the individual functions?
 -- TODO: test if MID exists, subfns throw if lookup fail
 score :: MatchId -> [Score] -> Tournament -> Tournament
-score id sc trn@(Tourney {rules = Duel e, size = np, matches = ms})
-  | Just (Match pls _) <- Map.lookup id ms
+score id sc trn@(Tourney {rules = r, size = np, matches = ms})
+  | Duel e <- r
+  , Just (Match pls _) <- Map.lookup id ms
   , all (>0) pls
   = let msUpd = execState (scoreDuel (pow np) e id sc pls) ms
         rsUpd = makeResults trn msUpd
     in trn { matches = msUpd, results = rsUpd }
-  | otherwise = error "match does not exist!"
-score _ _ _ {-id sc trn@(Tourney {rules = FFA _ _, matches = ms}) -}= scoreFFA
+
+  | FFA gs adv <- r
+  , Just (Match pls _) <- Map.lookup id ms
+  , any (>0) pls
+  = let msUpd = execState (scoreFFA gs adv id sc pls) ms
+    in trn { matches = msUpd }
+
+  | otherwise = error "match does not exist in tournament!"
+
+scoreFFA :: GroupSize -> Advancers -> MatchId -> [Score] -> [Int] -> State Matches (Maybe Match)
+scoreFFA (GS gs) (Adv adv) mid@(MID _ (R r) _) scrs pls = do
+  -- 1. score given match
+  let m = Match pls $ Just scrs
+  modify $ Map.adjust (const m) mid
+
+  -- 2. see if round is over
+  currRnd <- gets $ Map.filterWithKey (\(MID WB (R ri) _) _ -> ri == r)
+  if all (isJust . scores . snd) $ Map.toList currRnd
+    then return Nothing
+    else return Nothing
+
+
+  return $ Just m
 
 -- | Update the scores of a duel in an elimination tournament.
 -- Returns an updated tournament with the winner propagated to the next round,
 -- and the loser propagated to the loser bracket if applicable.
 scoreDuel :: Int -> Elimination -> MatchId -> [Score] -> [Int] -> State Matches (Maybe Match)
 scoreDuel p e mid scrs pls = do
-  let m = Match pls $ Just scrs
   -- 1. score given match
+  let m = Match pls $ Just scrs
   modify $ Map.adjust (const m) mid
 
   -- 2. move winner right
@@ -473,9 +494,6 @@ scoreDuel p e mid scrs pls = do
           ghalf = (g+1) `div` 2
           -- drop on top >R2, and <=2 for odd g to match bracket movement
           pos = if r > 2 || odd g then 0 else 1
-
---scoreFFA ::
-scoreFFA = undefined
 
 
 -- | Checks if a Tournament is valid
