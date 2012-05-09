@@ -22,7 +22,7 @@ import Data.List (sort, sortBy, group, groupBy, genericTake)
 import Data.Ord (comparing)
 import Data.Function (on)
 import Data.Bits (shiftL)
-import Data.Maybe (fromJust, isJust, fromMaybe, listToMaybe)
+import Data.Maybe (fromJust, isJust, fromMaybe)
 import Control.Monad.State --TODO: only what needed
 import Data.Map (Map)
 import qualified Data.Map.Lazy as Map
@@ -58,18 +58,22 @@ duelExpected n (a, b) = odd a && even b && a + b == 1 + 2^n
 
 -- | Splits a numer of players into groups of as close to equal seeding sum
 -- as possible. When groupsize is even and s | n, the seed sum is constant.
+-- Fixes the number of groups as ceil $ n / s, but will reduce s when all groups not full.
 inGroupsOf :: Int -> Int -> [[Int]]
 0 `inGroupsOf` _ = []
 n `inGroupsOf` s = map (sort . filter (<=n) . makeGroup) [1..ngrps] where
   ngrps = ceiling $ fromIntegral n / fromIntegral s
-  s' = s - head (filter (\x -> n > ngrps*(s-1-x)) [0..]) -- reduce s if unfillable
-  n' = ngrps*s' -- n if filled groups != n (10 inGroupsOf 4 uses n' = 12)
-  npairs = (s' `div` 2) * ngrps
-  pairs = zip [1..npairs] [n', n'-1..]
-  leftovers = [npairs+1, npairs+2 .. n'-npairs] -- [1..n'] \\ e in pairs
+
+  -- find largest 0<gs<=s s.t. even distribution => at least one full group, i.e. gs*ngrps - n < ngrps
+  gs = until ((< ngrps + n) . (*ngrps)) (subtract 1) s
+
+  modl = ngrps*gs -- modl may be bigger than n, e.e. inGroupsOf 10 4 has a 12 model
+  npairs = ngrps * (gs `div` 2)
+  pairs = zip [1..npairs] [modl, modl-1..]
+  leftovers = [npairs+1, npairs+2 .. modl-npairs] -- [1..modl] \\ e in pairs
   makeGroup i = leftover ++ concatMap (\(x,y) -> [x,y]) gpairs where
     gpairs = filter ((`elem` [i, i+ngrps .. i+npairs]) . fst) pairs
-    leftover = take 1 $ drop (i-1) leftovers
+    leftover = take 1 . drop (i-1) $ leftovers
 
 -- | Round robin schedules a list of n players and returns
 -- a list of rounds (where a round is a list of pairs). Uses
@@ -146,6 +150,7 @@ testor Tourney { matches = ms, results = rs } = do
 -- throws if bad tournament
 -- NB: tournament does not have updated Mathces, as this is called mid score
 -- uses supplied extra argument for updated matches
+
 makeResults :: Tournament -> Matches -> Maybe Results
 makeResults (Tourney {rules = Duel e, size = np}) ms
   | e == Single
@@ -177,30 +182,31 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
 
     -- scoring function assumes winner has been calculated so all that remains is:
     -- sort by maximum (last bracket's) round number descending, possibly flipping winners
+    -- TODO: portions of this could possibly be used as a rules agnostic version
     scorify :: Int -> Results
     scorify w = map result placements where
       result (pl, pos) = (pl, pos, extract wins, extract scoreSum) where
-        extract = fromMaybe 0 . listToMaybe . map snd . filter ((==pl) . fst)
+        extract = fromMaybe 0 . lookup pl
 
       -- all pipelines start with this. 0 should not exist, -1 => winner got further
       -- scores not Just => should not have gotten this far by guard in score fn
-      realms = Map.filter (all (>0) . players) ms
+      properms = Map.filter (all (>0) . players) ms
 
       wins = map (head &&& length)
         . group . sort
-        . Map.foldr ((:) . winner) [] $ realms
+        . Map.foldr ((:) . winner) [] $ properms
 
       scoreSum = map (fst . head &&& foldr ((+) . snd) 0)
         . groupBy ((==) `on` fst)
         . sortBy (comparing fst)
-        . Map.foldr ((++) . ((players &&& fromJust . scores) >>> uncurry zip)) [] $ realms
+        . Map.foldr ((++) . ((players &&& fromJust . scores) >>> uncurry zip)) [] $ properms
 
       placements = fixFirst
         . sortBy (comparing snd)
         . map (second (toPlacement e) . (fst . head &&& foldr (max . snd) 1))
         . groupBy ((==) `on` fst)
         . sortBy (comparing fst)
-        . Map.foldrWithKey rfold [] $ realms
+        . Map.foldrWithKey rfold [] $ properms
 
       rfold (MID br (R r) _) m acc =
         if (e == Single && br == WB) || (e == Double && br == LB)
@@ -213,8 +219,14 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
       -- TODO: if bronzeFinal then need to flip 3 and 4 possibly as well
       --fixForth (x:y:c:d:ls)
 
-makeResults (Tourney {rules = FFA (GS _) (Adv _), size = _}) _ = undefined
+makeResults (Tourney {rules = FFA (GS _) (Adv _), size = _}) ms
+  | (_, f@(Match _ (Just _))) <- Map.findMax ms
+  = Just scorify
 
+  | otherwise = Nothing
+  where
+    scorify :: Results
+    scorify = [(0,0,0,0)]
 
 -- helpers
 
@@ -231,9 +243,9 @@ winner = head . getScores
 loser = last . getScores
 
 -- duel specific maybe exportable
---duelPower :: Tournament -> Int
---duelPower Tourney {size = np} = pow np
-
+-- TODO: export under better name
+-- computes number of WB rounds from size myTournament
+-- double this number to get maximum number of lb rounds (final 2 irregular)
 pow :: Int -> Int
 pow = ceiling . logBase 2 . fromIntegral
 
@@ -246,6 +258,7 @@ woScores ps
 -- | Create match shells for an FFA elimination tournament.
 -- Result comes pre-filled in with either top advancers or advancers `intersect` seedList.
 -- This means what the player numbers represent is only fixed per round.
+-- TODO: Either String Tournament as return for intelligent error handling
 tournament :: Rules -> Size -> Tournament
 tournament rs@(FFA (GS gs) (Adv adv)) np
   -- Enforce >2 players, >2 players per match, and >1 group needed.
@@ -261,11 +274,11 @@ tournament rs@(FFA (GS gs) (Adv adv)) np
     --TODO: crossover matches?
 
         nextGroup g = leftover `inGroupsOf` gs where
-          adv' = adv - (gs - minsize g) -- force zero non-eliminating matches
-          adv'' = max adv' 1 -- but not if we only left 1 ^^ should still hold
-          leftover = length g * adv''
+          -- force zero non-eliminating matches unless only 1 left
+          advm = max 1 $ adv - (gs - minsize g)
+          leftover = length g * advm
 
-        grps = takeWhile ((>1) . length) $ iterate nextGroup $ np `inGroupsOf` gs
+        grps = takeWhile ((>1) . length) . iterate nextGroup $ np `inGroupsOf` gs
         final = nextGroup $ last grps
 
         -- finally convert raw group lists to matches
@@ -395,20 +408,19 @@ score id sc trn@(Tourney {rules = r, size = np, matches = ms})
   = let msUpd = execState (scoreFFA gs adv id sc pls) ms
     in trn { matches = msUpd }
 
-  | otherwise = error "match does not exist in tournament!"
+  | otherwise = error "match not scorable"
 
 scoreFFA :: GroupSize -> Advancers -> MatchId -> [Score] -> [Int] -> State Matches (Maybe Match)
-scoreFFA (GS gs) (Adv adv) mid@(MID _ (R r) _) scrs pls = do
+scoreFFA (GS _) (Adv _) mid@(MID _ (R r) _) scrs pls = do
   -- 1. score given match
   let m = Match pls $ Just scrs
   modify $ Map.adjust (const m) mid
 
   -- 2. see if round is over
-  currRnd <- gets $ Map.filterWithKey (\(MID WB (R ri) _) _ -> ri == r)
-  if all (isJust . scores . snd) $ Map.toList currRnd
+  currRnd <- gets $ Map.filterWithKey (\(MID _ (R ri) _) _ -> ri == r)
+  if all (isJust . scores) $ Map.elems currRnd
     then return Nothing
     else return Nothing
-
 
   return $ Just m
 
@@ -459,6 +471,7 @@ scoreDuel p e mid scrs pls = do
       | w <- winner mi, w > 0 = Just (mRight False p mid, w)
       | otherwise = Nothing
     woCheck _ _ _ = Nothing
+
 
     -- right progress fn: winner moves right to (MatchId, Position)
     mRight :: Bool -> Int -> MatchId -> Maybe (MatchId, Int)

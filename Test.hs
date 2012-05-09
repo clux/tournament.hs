@@ -86,6 +86,52 @@ seedsProps (p', i') = i < 2^(p-1) ==> T.duelExpected p $ T.seeds p i
 -- elimination
 -- test positive n <= 256
 
+upd :: MatchId -> [Score] -> State Tournament ()
+upd id sc = do
+  t <- get
+  put $ T.score id sc t
+  return ()
+
+manipSingle :: State Tournament ()
+manipSingle = do
+  upd (MID WB (R 1) (G 2)) [2,3]
+  upd (MID WB (R 1) (G 3)) [1,2]
+  upd (MID WB (R 1) (G 4)) [0,1]
+
+  upd (MID WB (R 2) (G 1)) [1,0]
+  upd (MID WB (R 2) (G 2)) [1,0]
+
+  upd (MID WB (R 3) (G 1)) [1,0]
+  return ()
+
+manipDouble :: State Tournament ()
+manipDouble = do
+  --upd (MID WB (R 1) (G 1)) [1,0]
+  upd (MID WB (R 1) (G 2)) [0,1]
+  --upd (MID WB (R 1) (G 3)) [1,0]
+  --upd (MID WB (R 1) (G 4)) [0,1]
+
+  upd (MID WB (R 2) (G 1)) [1,0]
+  upd (MID WB (R 2) (G 2)) [0,1]
+
+  upd (MID LB (R 2) (G 1)) [1,0]
+  upd (MID LB (R 3) (G 1)) [1,0]
+
+  upd (MID WB (R 3) (G 1)) [1,0]
+  upd (MID LB (R 4) (G 1)) [1,0]
+  upd (MID LB (R 5) (G 1)) [0,3] -- gf1
+  upd (MID LB (R 6) (G 1)) [1,2]
+
+  return ()
+
+-- strategy:
+-- generate a tournament of size SInt
+-- of Type Elimination determined by bool.
+-- get all matches ready to be scored:
+-- msrdy <- gets $ Map.filter (all (>0) scores)
+-- score all matches:
+-- Map.map (swap upd [1,0]) -- always score == [1,0]
+
 -- -----------------------------------------------------------------------------
 -- Test harness
 
