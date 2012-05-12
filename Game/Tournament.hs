@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE PatternGuards, BangPatterns #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Game.Tournament
@@ -203,9 +203,8 @@ data Result = Result {
 -- Only constructed by 'score' once the last game was played.
 type Results = [Result]
 
-
-data GroupSize = GS Int deriving (Show, Eq, Ord)
-data Advancers = Adv Int deriving (Show, Eq, Ord)
+type GroupSize = Int
+type Advancers = Int
 
 data Rules = FFA GroupSize Advancers | Duel Elimination
 type Size = Int
@@ -247,7 +246,7 @@ pow = ceiling . logBase 2 . fromIntegral
 count :: Tournament -> Bracket -> Int
 count Tourney { rules = Duel Single, size = np } br = if br == WB then pow np else 0 -- 1 with bronze
 count Tourney { rules = Duel Double, size = np } br = (if br == WB then 1 else 2) * pow np
-count Tourney { rules = FFA _ _, games = gs } WB = round . fst . Map.findMax $ gs
+count Tourney { rules = FFA _ _, games = ms } WB = round . fst . Map.findMax $ ms
 count Tourney { rules = FFA _ _} LB = 0
 
 -- Scoring and construction helper
@@ -261,33 +260,33 @@ woScores ps
 -- This means what the player numbers represent is only fixed per round.
 -- TODO: Either String Tournament as return for intelligent error handling
 tournament :: Rules -> Size -> Tournament
-tournament rs@(FFA (GS s) (Adv adv)) np
+tournament rs@(FFA gs adv) np
   -- Enforce >2 players, >2 players per match, and >1 group needed.
   -- Not technically limiting, but: gs 2 <=> duel and 1 group <=> best of one.
   | np <= 2 = error "Need >2 players for an FFA elimination"
-  | s <= 2 = error "Need >2 players per match for an FFA elimination"
-  | np <= s = error "Need >1 group for an FFA elimination"
-  | adv >= s = error "Need to eliminate at least one player a match in FFA elimination"
+  | gs <= 2 = error "Need >2 players per match for an FFA elimination"
+  | np <= gs = error "Need >1 group for an FFA elimination"
+  | adv >= gs = error "Need to eliminate at least one player a match in FFA elimination"
   | adv <= 0 = error "Need >0 players to advance per match in a FFA elimination"
   | otherwise =
     --TODO: allow crossover matches when there are gaps intelligently..
     let minsize = minimum . map length
-    --TODO: crossover matches?
-
-        nextGroup g = leftover `inGroupsOf` s where
+        hideSeeds = map $ map $ const 0
+        nextGroup g = hideSeeds $ leftover `inGroupsOf` gs where
           -- force zero non-eliminating matches unless only 1 left
-          advm = max 1 $ adv - (s - minsize g)
+          advm = max 1 $ adv - (gs - minsize g)
           leftover = length g * advm
 
-        grps = takeWhile ((>1) . length) . iterate nextGroup $ np `inGroupsOf` s
-        final = nextGroup $ last grps
+        playoffs = takeWhile ((>1) . length) . iterate nextGroup $ np `inGroupsOf` gs
+        final = nextGroup $ last playoffs
+        grps = playoffs ++ [final]
 
         -- finally convert raw group lists to matches
         makeRound grp r = zipWith makeMatch grp [1..] where
           makeMatch g i = (GameId WB r i, Game g Nothing)
 
-        gs = Map.fromList $ concat $ zipWith makeRound (final : grps) [1..]
-    in Tourney { size = np, rules = rs, games = gs, results = Nothing, crossover = False }
+        ms = Map.fromList . concat $ zipWith makeRound grps [1..]
+    in Tourney { size = np, rules = rs, games = ms, results = Nothing, crossover = False }
 
 
 -- | Create match shells for an elimination tournament
@@ -298,7 +297,7 @@ tournament rs@(Duel e) np
   -- 2p Single == 1 best of 1 match, 2p Double == 1 best of 3 match
   -- and grand final rules fail when LB final is R1 (p=1) as GF is then 2*p-1 == 1 ↯
   | np < 4 = error "Need >=4 competitors for an elimination tournament"
-  | otherwise = Tourney { size = np, rules = rs, games = gs, results = Nothing, crossover = True} where
+  | otherwise = Tourney { size = np, rules = rs, games = ms, results = Nothing, crossover = True} where
     p = pow np
 
     -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
@@ -342,20 +341,20 @@ tournament rs@(Duel e) np
     -- finally, union the mappified brackets
     wb = Map.union (toMap wbRest) $ Map.fromList $ wbr1 ++ wbr2
     lb = Map.union (toMap lbRest) $ Map.fromList $ lbr1 ++ lbr2
-    gs = if e == Single then wb else wb `Map.union` lb
+    ms = if e == Single then wb else wb `Map.union` lb
 
 
 
 makeResults :: Tournament -> Games -> Maybe Results
-makeResults (Tourney {rules = Duel e, size = np}) gs
+makeResults (Tourney {rules = Duel e, size = np}) ms
   | e == Single
-  , Just wbf@(Game _ (Just _)) <- Map.lookup (GameId WB p 1) gs -- final played
+  , Just wbf@(Game _ (Just _)) <- Map.lookup (GameId WB p 1) ms -- final played
   -- bf lookup here if included!
   = Just . scorify . winner $ wbf
 
   | e == Double
-  , Just gf1@(Game _ (Just gf1sc)) <- Map.lookup (GameId LB (2*p-1) 1) gs -- gf1 played
-  , Just gf2@(Game _ gf2sc) <- Map.lookup (GameId LB (2*p) 1) gs  -- gf2 maybe played
+  , Just gf1@(Game _ (Just gf1sc)) <- Map.lookup (GameId LB (2*p-1) 1) ms -- gf1 played
+  , Just gf2@(Game _ gf2sc) <- Map.lookup (GameId LB (2*p) 1) ms  -- gf2 maybe played
   , isJust gf2sc || maximum gf1sc == head gf1sc -- gf2 played || gf1 conclusive
   = Just . scorify . winner $ if isJust gf2sc then gf2 else gf1
 
@@ -386,23 +385,23 @@ makeResults (Tourney {rules = Duel e, size = np}) gs
 
       -- all pipelines start with this. 0 should not exist, -1 => winner got further
       -- scores not Just => should not have gotten this far by guard in score fn
-      gsnwo = Map.filter (all (>0) . players) gs
+      msnwo = Map.filter (all (>0) . players) ms
 
       wins = map (head &&& length)
         . group . sort
-        . Map.foldr ((:) . winner) [] $ gsnwo
+        . Map.foldr ((:) . winner) [] $ msnwo
 
       scoreSum = map (fst . head &&& foldr ((+) . snd) 0)
         . groupBy ((==) `on` fst)
         . sortBy (comparing fst)
-        . Map.foldr ((++) . gameZip) [] $ gsnwo
+        . Map.foldr ((++) . gameZip) [] $ msnwo
 
       placements = fixFirst
         . sortBy (comparing snd)
         . map (second (toPlacement e) . (fst . head &&& foldr (max . snd) 1))
         . groupBy ((==) `on` fst)
         . sortBy (comparing fst)
-        . Map.foldrWithKey rfold [] $ gsnwo
+        . Map.foldrWithKey rfold [] $ msnwo
 
       rfold (GameId br r _) m acc =
         if (e == Single && br == WB) || (e == Double && br == LB)
@@ -415,8 +414,8 @@ makeResults (Tourney {rules = Duel e, size = np}) gs
       -- TODO: if bronzeFinal then need to flip 3 and 4 possibly as well
       --fixForth (x:y:c:d:ls)
 
-makeResults (Tourney {rules = FFA (GS _) (Adv _), size = _}) gs
-  | (_, f@(Game _ (Just _))) <- Map.findMax gs
+makeResults (Tourney {rules = FFA _ _, size = _}) ms
+  | (_, f@(Game _ (Just _))) <- Map.findMax ms
   = Just scorify
 
   | otherwise = Nothing
@@ -430,24 +429,24 @@ makeResults (Tourney {rules = FFA (GS _) (Adv _), size = _}) gs
 -- TODO: documentation absorb the individual functions?
 -- TODO: test if MID exists, subfns throw if lookup fail
 score :: GameId -> [Score] -> Tournament -> Tournament
-score id sc trn@(Tourney { rules = r, size = np, games = gs })
+score id sc trn@(Tourney { rules = r, size = np, games = ms })
   | Duel e <- r
-  , Just (Game pls _) <- Map.lookup id gs
+  , Just (Game pls _) <- Map.lookup id ms
   , all (>0) pls
-  = let gsUpd = execState (scoreDuel (pow np) e id sc pls) gs
-        rsUpd = makeResults trn gsUpd
-    in trn { games = gsUpd, results = rsUpd }
+  = let msUpd = execState (scoreDuel (pow np) e id sc pls) ms
+        rsUpd = makeResults trn msUpd
+    in trn { games = msUpd, results = rsUpd }
 
   | FFA s adv <- r
-  , Just (Game pls _) <- Map.lookup id gs
+  , Just (Game pls _) <- Map.lookup id ms
   , any (>0) pls
-  = let gsUpd = execState (scoreFFA s adv id sc pls) gs
-    in trn { games = gsUpd }
+  = let msUpd = execState (scoreFFA s adv id sc pls) ms
+    in trn { games = msUpd }
 
   | otherwise = error "game not scorable"
 
 scoreFFA :: GroupSize -> Advancers -> GameId -> [Score] -> [Player] -> State Games (Maybe Game)
-scoreFFA (GS _) (Adv _) gid@(GameId _ r _) scrs pls = do
+scoreFFA gs _ gid@(GameId _ r _) scrs pls = do
   -- 1. score given game
   let m = Game pls $ Just scrs
   modify $ Map.adjust (const m) gid
@@ -455,17 +454,24 @@ scoreFFA (GS _) (Adv _) gid@(GameId _ r _) scrs pls = do
   -- 2. see if round is over
   --currRnd <- gets (Map.filterWithKey ((==r) . round)))
   currRnd <- gets $ Map.elems . Map.filterWithKey (const . (==r) . round)
-  if all (isJust . result) $ currRnd
+  if all (isJust . result) currRnd
     then do
+      -- recreate grps (with seeds) from construction
       numNext <- gets $ sum
         . Map.foldr ((:) . length . players) []
         . Map.filterWithKey (const . (==r+1) . round)
+      --TODO: protect against zero numNext
 
-      let rndTop = getScores currRnd
+      -- currRnd -> [(Seed, Player)] map
+      let seedList = seedToPlayer currRnd
+
+      -- this should map the right groups for next round from
+      --let grps = map (map fromJust . (\p -> lookup p seedList)) $ numNext `inGroupsOf` gs
+      --TODO: lambda fix
+
+
+
       {- NEED TO:
-      sort . map scoreSum of each player
-      sum count the next round (IF EXISTS)
-      initialize the next round with sum count standard group size
       replace the numbers generated by inGroupsOf with by substituting from scoreSum list
       modify $ the n found matches in r+1 with the sublists from line above and scores = Nothing
       -}
@@ -474,7 +480,7 @@ scoreFFA (GS _) (Adv _) gid@(GameId _ r _) scrs pls = do
 
   return $ Just m
   where
-    getScores = gameSort . concatMap gameZip
+    seedToPlayer rnd = zip [1..] $ map fst . gameSort . concatMap gameZip $ rnd
 
 -- | Update the scores of a duel in an elimination tournament.
 -- Returns an updated tournament with the winner propagated to the next round,
@@ -613,10 +619,7 @@ testcase = let
 testor :: Tournament -> IO ()
 testor Tourney { games = ms, results = rs } = do
   mapM_ print $ Map.assocs ms
-  if isJust rs
-    then mapM_ print $ fromJust rs
-    else print "no results"
-
+  maybe (print "no results") (mapM_ print) rs
 
 -- | Checks if a Tournament is valid
 {-
