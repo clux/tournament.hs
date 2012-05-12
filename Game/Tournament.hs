@@ -1,17 +1,68 @@
--- Based on the theory from http://clux.org/entries/view/2407
 {-# LANGUAGE PatternGuards #-}
+-----------------------------------------------------------------------------
+-- |
+-- Module      :  Game.Tournament
+-- Copyright   :  (c) Eirik Albrigtsen 2012
+-- License     :  GPL-style
+-- Maintainer  :  Eirik <clux> Albrigtsen
+-- Stability   :  unstable
+--
+-- Tournament construction and maintenance including competition based structures and helpers.
+--
+-- For simple uses of the the basic building blocks, qualified or partial imports is recommended.
+-- However, due to the large number of simple types needed to operate the main tournament
+-- machinery, a raw import into a dedicated outside-world interfacing helper file is recommended.
+--
+-- > import Game.Tournament
+--
+-- The Tournament structure contain a Map of 'MatchId' -> 'Match' for its internal
+-- representation and the 'MatchId' keys are the location in the Tournament.
+
+-- TODO: This structure is meant to encapsulate this structure to ensure internal consistency,
+-- but hopefully in such a way it can be safely serialized to DBs.
+-----------------------------------------------------------------------------
+
 module Game.Tournament (
-   -- * Duel helpers
-     seeds             -- :: Int -> Int -> (Int, Int)
-   , duelExpected      -- :: Int -> (Int, Int) -> Bool
+   -- * Building Block A: Duel helpers
+     seeds
+   , duelExpected
 
-   -- * Group helpers
-   , inGroupsOf        -- :: Int -> Int -> [Group]
-   , robin             -- :: Int -> [RobinRound]
+   -- * Building Block B: Group helpers
+   , inGroupsOf
+   , robin
 
-   -- * Tournament helpers
-   , tournament        -- :: Rules -> Size -> Tournament
-   , score             -- :: MatchId -> Maybe [Score] -> Tournament -> Tournament
+   -- * Tournament Types
+   , GameId(..)
+   , Elimination(..)
+   , Bracket(..)
+   , Rules(..)
+   , Results
+
+   , Result  -- no constructor
+   , player
+   , placement
+   , wins
+   , total
+
+   , Size
+
+   , Tournament -- no constructor
+   , Score
+
+   --, Game(..)
+   --, Player
+
+   --, Games
+
+   -- * Tournament Interface
+   , tournament
+   , score
+   , count
+
+   -- -* Match Inspection
+   --, scores
+   --, winner
+   --, loser
 
    , testcase
 ) where
@@ -23,15 +74,17 @@ import Data.Ord (comparing)
 import Data.Function (on)
 import Data.Bits (shiftL)
 import Data.Maybe (fromJust, isJust, fromMaybe)
-import Control.Monad.State --TODO: only what needed
+import Control.Monad.State (State, get, put, modify, execState, gets)
 import Data.Map (Map)
 import qualified Data.Map.Lazy as Map
 import qualified Data.Set as Set
-import Control.Arrow ((&&&), (>>>), second)
+import Control.Arrow ((&&&), second)
 import System.IO.Unsafe (unsafePerformIO) -- while developing
+import Prelude hiding (round)
 
 -- -----------------------------------------------------------------------------
 -- TODO should somehow ensure 0 < i <= 2^(p-1) in the next fn
+-- | Duel tournaments is based on the theory from <http://clux.org/entries/view/2407>
 
 -- | Computes both the player seeds (in order) for a duel elimiation match.
 -- The first argument, p, is the power of the tournament,
@@ -91,76 +144,218 @@ robin n = map (filter notDummy . toPairs) rounds where
 -- -----------------------------------------------------------------------------
 -- Duel elimination
 
-data Bracket = WB | LB deriving (Show, Eq, Ord)
-data Round = R Int deriving (Show, Eq, Ord)
-data Game = G Int deriving (Show, Eq, Ord)
-data MatchId = MID Bracket Round Game deriving (Show, Eq, Ord)
---Note: instanceof Ord MatchId sorts by unequal Bracket, else unequal Round, else Game
-gameNum :: MatchId -> Int -- convenience
-gameNum (MID _ _ (G g)) = g
+-- | The location of a game is written as to simulate the classical shorthand WBR2,
+-- but includes additionally the game number for complete positional uniqueness.
+--
+-- A 'Single' elimination final will have the unique identifier
+--
+-- > let wbf = GameId WB p 1
+--
+-- where 'p == count t WB'.
+data GameId = GameId {
+  bracket :: Bracket
+, round   :: Int
+, game    :: Int
+} deriving (Show, Eq, Ord)
 
-type Player = Int
-type Score = Int
--- if scored, scored all at once - zip gives the correct association between scores and players
-data Match = Match {
-  players :: [Int]
-, scores  :: Maybe [Score]
+-- | Duel Tournament option.
+--
+-- 'Single' elimation is a standard power of 2 tournament tree,
+-- wheras 'Double' elimination grants each loser a second chance in the lower bracket.
+data Elimination = Single | Double deriving (Show, Eq, Ord)
+
+-- | The bracket location of a game.
+--
+-- For 'Duel' 'Single' or 'FFA', most matches exist in  the winners bracket ('WB')
+-- , with the exception of the bronze final and possible crossover matches.
+--
+-- 'Duel' 'Double' or 'FFA' with crossovers will have extra matches in the loser bracket ('LB').
+data Bracket = WB | LB deriving (Show, Eq, Ord)
+
+-- | Players and Results zip to the correct association list.
+-- 'scores' will obtain this ordered association list safely.
+data Game = Game {
+  players :: [Player]
+, result  :: Maybe [Score]
 } deriving (Show, Eq)
 
+type Games = Map GameId Game
 
-type Matches = Map MatchId Match
---showTournament t = mapM_ print $ Map.toList t
+-- | 'score' clarification types.
+type Position = Int
+type Score = Int
+type Player = Int
 
--- Ordered set of winners. Ordering is descending, i.e. head is the winner.
--- NB: more wins =/> better placement (LB player may have more wins than GF winner from WB for example).
-type Wins = Int
-type Placement = Int
-type Results = [(Player, Placement, Wins, Score)] -- last is sum of scores over Tournament
-{-data Results = Results {
+-- | Record of each player's accomplishments in the current tournament.
+data Result = Result {
+  -- | Player associated with the record.
   player    :: Int
+  -- | Placement of the player associated with this record.
 , placement :: Int
-, won       :: Int
-, sumScore  :: Int
-,
-} deriving (Show)-}
+  -- | Number of games the player associated with this record won.
+, wins      :: Int
+  -- | Sum of scores for the games the associated player played.
+, total     :: Int
+} deriving (Show)
 
---type Results = [(Player, Placement)]
-data Elimination = Single | Double deriving (Show, Eq, Ord)
+-- | Results in descending order of placement.
+--
+-- Only constructed by 'score' once the last game was played.
+type Results = [Result]
+
+
 data GroupSize = GS Int deriving (Show, Eq, Ord)
 data Advancers = Adv Int deriving (Show, Eq, Ord)
+
 data Rules = FFA GroupSize Advancers | Duel Elimination
 type Size = Int
 
 data Tournament = Tourney {
-  size    :: Size
-, rules   :: Rules
-, matches :: Matches
-, results :: Maybe Results
+  size      :: Size
+, crossover :: Bool
+, rules     :: Rules
+, games     :: Games
+, results   :: Maybe Results
 }
 
-testor :: Tournament -> IO ()
-testor Tourney { matches = ms, results = rs } = do
-  mapM_ print $ Map.assocs ms
-  if isJust rs
-    then do
-      print "results: (Player, Placement, Wins, ScoreSum)"
-      mapM_ print $ fromJust rs
-    else print "no results"
+-- Internal helpers
+gameZip :: Game -> [(Player, Score)]
+gameZip m = zip (players m) (fromJust (result m))
+gameSort :: [(Player, Score)] -> [(Player, Score)]
+gameSort = reverse . sortBy (comparing snd)
 
--- throws if bad tournament
--- NB: tournament does not have updated Mathces, as this is called mid score
--- uses supplied extra argument for updated matches
+-- | Sorted player identifier list by scores.
+--
+-- If this is called on an unscored match a (finite) list zeroes is returned.
+-- This is consistent with the internal representation of placeholders in Matches.
+-- TODO: could also use gameZip?
+scores :: Game -> [Player]
+scores g@(Game pls msc)
+  | Just _ <- msc = map fst . gameSort . gameZip $ g
+  | otherwise = replicate (length pls) 0
 
-makeResults :: Tournament -> Matches -> Maybe Results
-makeResults (Tourney {rules = Duel e, size = np}) ms
+-- | The first and last elements from scores.
+winner, loser :: Game -> Player
+winner = head . scores
+loser = last . scores
+
+-- Duel specific helper
+pow :: Int -> Int
+pow = ceiling . logBase 2 . fromIntegral
+
+-- | Count the number of rounds in a given bracket in a Tournament.
+count :: Tournament -> Bracket -> Int
+count Tourney { rules = Duel Single, size = np } br = if br == WB then pow np else 0 -- 1 with bronze
+count Tourney { rules = Duel Double, size = np } br = (if br == WB then 1 else 2) * pow np
+count Tourney { rules = FFA _ _, games = gs } WB = round . fst . Map.findMax $ gs
+count Tourney { rules = FFA _ _} LB = 0
+
+-- Scoring and construction helper
+woScores :: [Player] -> Maybe [Score]
+woScores ps
+  | 0 `notElem` ps && -1 `elem` ps = Just $ map (\x -> if x == -1 then 0 else 1) ps
+  | otherwise = Nothing
+
+-- | Create match shells for an FFA elimination tournament.
+-- Result comes pre-filled in with either top advancers or advancers `intersect` seedList.
+-- This means what the player numbers represent is only fixed per round.
+-- TODO: Either String Tournament as return for intelligent error handling
+tournament :: Rules -> Size -> Tournament
+tournament rs@(FFA (GS s) (Adv adv)) np
+  -- Enforce >2 players, >2 players per match, and >1 group needed.
+  -- Not technically limiting, but: gs 2 <=> duel and 1 group <=> best of one.
+  | np <= 2 = error "Need >2 players for an FFA elimination"
+  | s <= 2 = error "Need >2 players per match for an FFA elimination"
+  | np <= s = error "Need >1 group for an FFA elimination"
+  | adv >= s = error "Need to eliminate at least one player a match in FFA elimination"
+  | adv <= 0 = error "Need >0 players to advance per match in a FFA elimination"
+  | otherwise =
+    --TODO: allow crossover matches when there are gaps intelligently..
+    let minsize = minimum . map length
+    --TODO: crossover matches?
+
+        nextGroup g = leftover `inGroupsOf` s where
+          -- force zero non-eliminating matches unless only 1 left
+          advm = max 1 $ adv - (s - minsize g)
+          leftover = length g * advm
+
+        grps = takeWhile ((>1) . length) . iterate nextGroup $ np `inGroupsOf` s
+        final = nextGroup $ last grps
+
+        -- finally convert raw group lists to matches
+        makeRound grp r = zipWith makeMatch grp [1..] where
+          makeMatch g i = (GameId WB r i, Game g Nothing)
+
+        gs = Map.fromList $ concat $ zipWith makeRound (final : grps) [1..]
+    in Tourney { size = np, rules = rs, games = gs, results = Nothing, crossover = False }
+
+
+-- | Create match shells for an elimination tournament
+-- hangles walkovers and leaves the tournament in a stable initial state
+tournament rs@(Duel e) np
+  -- Enforce minimum 4 players for a tournament. It is possible to extend to 2 and 3, but:
+  -- 3p uses a 4p model with one WO => == RRobin in Double, == Unfair in Single
+  -- 2p Single == 1 best of 1 match, 2p Double == 1 best of 3 match
+  -- and grand final rules fail when LB final is R1 (p=1) as GF is then 2*p-1 == 1 ↯
+  | np < 4 = error "Need >=4 competitors for an elimination tournament"
+  | otherwise = Tourney { size = np, rules = rs, games = gs, results = Nothing, crossover = True} where
+    p = pow np
+
+    -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
+    markWO (x, y) = map (\a -> if a <= np then a else -1) [x,y]
+    makeWbR1 i = (l, Game pl (woScores pl)) where
+      l = GameId WB 1 i
+      pl = markWO $ seeds p i
+
+    -- make WBR2 and LBR1 shells by using the paired WBR1 results to propagate winners/WO markers
+    propagateWbR1 br ((_, m1), (l2, m2)) = (l, Game pl (woScores pl)) where
+      (l, pl)
+        | br == WB = (GameId WB 2 g, map winner [m1, m2])
+        | br == LB = (GameId LB 1 g, map loser [m1, m2])
+      g = game l2 `div` 2
+
+    -- make LBR2 shells by using LBR1 results to propagate WO markers if 2x
+    makeLbR2 (l1, m1) = (l, Game pl Nothing) where
+      l = GameId LB 2 $ game l1
+      plw = winner m1
+      pl = if odd (game l1) then [0, plw] else [plw, 0]
+
+    -- construct (possibly) non-empty rounds
+    wbr1 = map makeWbR1 [1..2^(p-1)]
+    wbr1pairs = take (2^(p-2))
+      $ filter (even . game . fst . snd) $ zip wbr1 (tail wbr1)
+    wbr2 = map (propagateWbR1 WB) wbr1pairs
+    lbr1 = map (propagateWbR1 LB) wbr1pairs
+    lbr2 = map makeLbR2 lbr1
+
+    -- construct (definitely) empty rounds
+    wbRest = concatMap makeRound [3..p] where
+      makeRound r = map (GameId WB r) [1..2^(p-r)]
+      --bfm = MID LB (R 1) (G 1) -- bronze final here, exception
+
+    lbRest = map gfms [2*p-1, 2*p] ++ concatMap makeRound [3..2*p-2] where
+      makeRound r = map (GameId LB r) [1..(2^) $ p - 1 - (r+1) `div` 2]
+      gfms r = GameId LB r 1
+
+    toMap = Map.fromSet (const (Game [0,0] Nothing)) . Set.fromList
+
+    -- finally, union the mappified brackets
+    wb = Map.union (toMap wbRest) $ Map.fromList $ wbr1 ++ wbr2
+    lb = Map.union (toMap lbRest) $ Map.fromList $ lbr1 ++ lbr2
+    gs = if e == Single then wb else wb `Map.union` lb
+
+
+
+makeResults :: Tournament -> Games -> Maybe Results
+makeResults (Tourney {rules = Duel e, size = np}) gs
   | e == Single
-  , Just wbf@(Match _ (Just _)) <- Map.lookup (MID WB (R p) (G 1)) ms -- final played
+  , Just wbf@(Game _ (Just _)) <- Map.lookup (GameId WB p 1) gs -- final played
   -- bf lookup here if included!
   = Just . scorify . winner $ wbf
 
   | e == Double
-  , Just gf1@(Match _ (Just gf1sc)) <- Map.lookup (MID LB (R (2*p-1)) (G 1)) ms -- gf1 played
-  , Just gf2@(Match _ gf2sc) <- Map.lookup (MID LB (R (2*p)) (G 1)) ms  -- gf2 maybe played
+  , Just gf1@(Game _ (Just gf1sc)) <- Map.lookup (GameId LB (2*p-1) 1) gs -- gf1 played
+  , Just gf2@(Game _ gf2sc) <- Map.lookup (GameId LB (2*p) 1) gs  -- gf2 maybe played
   , isJust gf2sc || maximum gf1sc == head gf1sc -- gf2 played || gf1 conclusive
   = Just . scorify . winner $ if isJust gf2sc then gf2 else gf1
 
@@ -184,31 +379,32 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
     -- sort by maximum (last bracket's) round number descending, possibly flipping winners
     -- TODO: portions of this could possibly be used as a rules agnostic version
     scorify :: Int -> Results
-    scorify w = map result placements where
-      result (pl, pos) = (pl, pos, extract wins, extract scoreSum) where
+    scorify w = map mergeLists placements where
+      mergeLists (pl, pos) = Result { player = pl, placement = pos
+        , wins = extract wins, total = extract scoreSum } where
         extract = fromMaybe 0 . lookup pl
 
       -- all pipelines start with this. 0 should not exist, -1 => winner got further
       -- scores not Just => should not have gotten this far by guard in score fn
-      properms = Map.filter (all (>0) . players) ms
+      gsnwo = Map.filter (all (>0) . players) gs
 
       wins = map (head &&& length)
         . group . sort
-        . Map.foldr ((:) . winner) [] $ properms
+        . Map.foldr ((:) . winner) [] $ gsnwo
 
       scoreSum = map (fst . head &&& foldr ((+) . snd) 0)
         . groupBy ((==) `on` fst)
         . sortBy (comparing fst)
-        . Map.foldr ((++) . ((players &&& fromJust . scores) >>> uncurry zip)) [] $ properms
+        . Map.foldr ((++) . gameZip) [] $ gsnwo
 
       placements = fixFirst
         . sortBy (comparing snd)
         . map (second (toPlacement e) . (fst . head &&& foldr (max . snd) 1))
         . groupBy ((==) `on` fst)
         . sortBy (comparing fst)
-        . Map.foldrWithKey rfold [] $ properms
+        . Map.foldrWithKey rfold [] $ gsnwo
 
-      rfold (MID br (R r) _) m acc =
+      rfold (GameId br r _) m acc =
         if (e == Single && br == WB) || (e == Double && br == LB)
           then (++ acc) . map (id &&& const r) $ players m
           else acc
@@ -219,139 +415,164 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
       -- TODO: if bronzeFinal then need to flip 3 and 4 possibly as well
       --fixForth (x:y:c:d:ls)
 
-makeResults (Tourney {rules = FFA (GS _) (Adv _), size = _}) ms
-  | (_, f@(Match _ (Just _))) <- Map.findMax ms
+makeResults (Tourney {rules = FFA (GS _) (Adv _), size = _}) gs
+  | (_, f@(Game _ (Just _))) <- Map.findMax gs
   = Just scorify
 
   | otherwise = Nothing
   where
     scorify :: Results
-    scorify = [(0,0,0,0)]
-
--- helpers
-
--- these are rules agnostic
--- TODO: maybe export this?, should do for FFA
-getScores :: Match -> [Int]
-getScores (Match pls mscrs)
-  | Just scrs <- mscrs = map fst . reverse . sortBy (comparing snd) . zip pls $ scrs
-  | otherwise = replicate (length pls) 0
-
--- these can be exported
-winner, loser :: Match -> Int
-winner = head . getScores
-loser = last . getScores
-
--- duel specific maybe exportable
--- TODO: export under better name
--- computes number of WB rounds from size myTournament
--- double this number to get maximum number of lb rounds (final 2 irregular)
-pow :: Int -> Int
-pow = ceiling . logBase 2 . fromIntegral
-
-woScores :: [Int] -> Maybe [Int]
-woScores ps
-  | 0 `notElem` ps && -1 `elem` ps = Just $ map (\x -> if x == -1 then 0 else 1) ps
-  | otherwise = Nothing
+    scorify = [Result 0 0 0 0]
 
 
--- | Create match shells for an FFA elimination tournament.
--- Result comes pre-filled in with either top advancers or advancers `intersect` seedList.
--- This means what the player numbers represent is only fixed per round.
--- TODO: Either String Tournament as return for intelligent error handling
-tournament :: Rules -> Size -> Tournament
-tournament rs@(FFA (GS gs) (Adv adv)) np
-  -- Enforce >2 players, >2 players per match, and >1 group needed.
-  -- Not technically limiting, but: gs 2 <=> duel and 1 group <=> best of one.
-  | np <= 2 = error "Need >2 players for an FFA elimination"
-  | gs <= 2 = error "Need >2 players per match for an FFA elimination"
-  | np <= gs = error "Need >1 group for an FFA elimination"
-  | adv >= gs = error "Need to eliminate at least one player a match in FFA elimination"
-  | adv <= 0 = error "Need >0 players to advance per match in a FFA elimination"
-  | otherwise =
-    --TODO: allow crossover matches when there are gaps intelligently..
-    let minsize = minimum . map length
-    --TODO: crossover matches?
+-- | Score a match in a tournament and propagate winners/losers.
+-- TODO: make a strict version of this
+-- TODO: documentation absorb the individual functions?
+-- TODO: test if MID exists, subfns throw if lookup fail
+score :: GameId -> [Score] -> Tournament -> Tournament
+score id sc trn@(Tourney { rules = r, size = np, games = gs })
+  | Duel e <- r
+  , Just (Game pls _) <- Map.lookup id gs
+  , all (>0) pls
+  = let gsUpd = execState (scoreDuel (pow np) e id sc pls) gs
+        rsUpd = makeResults trn gsUpd
+    in trn { games = gsUpd, results = rsUpd }
 
-        nextGroup g = leftover `inGroupsOf` gs where
-          -- force zero non-eliminating matches unless only 1 left
-          advm = max 1 $ adv - (gs - minsize g)
-          leftover = length g * advm
+  | FFA s adv <- r
+  , Just (Game pls _) <- Map.lookup id gs
+  , any (>0) pls
+  = let gsUpd = execState (scoreFFA s adv id sc pls) gs
+    in trn { games = gsUpd }
 
-        grps = takeWhile ((>1) . length) . iterate nextGroup $ np `inGroupsOf` gs
-        final = nextGroup $ last grps
+  | otherwise = error "game not scorable"
 
-        -- finally convert raw group lists to matches
-        makeRound grp r = zipWith makeMatch grp [1..] where
-          makeMatch g i = (MID WB (R r) (G i), Match g Nothing)
+scoreFFA :: GroupSize -> Advancers -> GameId -> [Score] -> [Player] -> State Games (Maybe Game)
+scoreFFA (GS _) (Adv _) gid@(GameId _ r _) scrs pls = do
+  -- 1. score given game
+  let m = Game pls $ Just scrs
+  modify $ Map.adjust (const m) gid
 
-        ms = Map.fromList $ concat $ zipWith makeRound (final : grps) [1..]
-    in Tourney { size = np, rules = rs, matches = ms, results = Nothing }
+  -- 2. see if round is over
+  --currRnd <- gets (Map.filterWithKey ((==r) . round)))
+  currRnd <- gets $ Map.elems . Map.filterWithKey (const . (==r) . round)
+  if all (isJust . result) $ currRnd
+    then do
+      numNext <- gets $ sum
+        . Map.foldr ((:) . length . players) []
+        . Map.filterWithKey (const . (==r+1) . round)
+
+      let rndTop = getScores currRnd
+      {- NEED TO:
+      sort . map scoreSum of each player
+      sum count the next round (IF EXISTS)
+      initialize the next round with sum count standard group size
+      replace the numbers generated by inGroupsOf with by substituting from scoreSum list
+      modify $ the n found matches in r+1 with the sublists from line above and scores = Nothing
+      -}
+      return Nothing
+    else return Nothing
+
+  return $ Just m
+  where
+    getScores = gameSort . concatMap gameZip
+
+-- | Update the scores of a duel in an elimination tournament.
+-- Returns an updated tournament with the winner propagated to the next round,
+-- and the loser propagated to the loser bracket if applicable.
+scoreDuel :: Int -> Elimination -> GameId -> [Score] -> [Player] -> State Games (Maybe Game)
+scoreDuel p e gid scrs pls = do
+  -- 1. score given game
+  let m = Game pls $ Just scrs
+  modify $ Map.adjust (const m) gid
+
+  -- 2. move winner right
+  let nprog = mRight True p gid
+  nres <- playerInsert nprog $ winner m
+
+  -- 3. move loser to down if we were in winners
+  let dprog = mDown p gid
+  dres <- playerInsert dprog $ loser m
+
+  -- 4. check if loser needs WO from LBR1
+  let dprog2 = woCheck p dprog dres
+  uncurry playerInsert $ fromMaybe (Nothing, 0) dprog2
+
+  -- 5. check if winner needs WO from LBR2
+  let nprog2 = woCheck p nprog nres
+  uncurry playerInsert $ fromMaybe (Nothing, 0) nprog2
+
+  return $ Just m
+
+  where
+    -- insert player x into list index idx of mid's players, and woScore it
+    -- progress result determines location and must be passed in as fst arg
+    playerInsert :: Maybe (GameId, Position) -> Player -> State Games (Maybe Game)
+    playerInsert Nothing _ = return Nothing
+    playerInsert (Just (gid, idx)) x = do
+      tmap <- get
+      let (updated, tupd) = Map.updateLookupWithKey updFn gid tmap
+      put tupd
+      return updated
+        where updFn _ (Game plsi _) = Just $ Game plsm (woScores plsm) where
+                plsm = if idx == 0 then [x, last plsi] else [head plsi, x]
+
+    -- given tourney power, progress results, and insert results, of previous
+    -- if it was woScored in playerInsert, produce new (progress, winner) pair
+    woCheck :: Player
+            -> Maybe (GameId, Position)
+            -> Maybe Game
+            -> Maybe (Maybe (GameId, Position), Player)
+    woCheck p (Just (gid, _)) (Just mg)
+      | w <- winner mg, w > 0 = Just (mRight False p gid, w)
+      | otherwise = Nothing
+    woCheck _ _ _ = Nothing
 
 
--- | Create match shells for an elimination tournament
--- hangles walkovers and leaves the tournament in a stable initial state
-tournament rs@(Duel e) np
-  -- Enforce minimum 4 players for a tournament. It is possible to extend to 2 and 3, but:
-  -- 3p uses a 4p model with one WO => == RRobin in Double, == Unfair in Single
-  -- 2p Single == 1 best of 1 match, 2p Double == 1 best of 3 match
-  -- and grand final rules fail when LB final is R1 (p=1) as GF is then 2*p-1 == 1 ↯
-  | np < 4 = error "Need >=4 competitors for an elimination tournament"
-  | otherwise = Tourney { size = np, rules = rs, matches = ms, results = Nothing } where
-    p = pow np
+    -- right progress fn: winner moves right to (GameId, Position)
+    mRight :: Bool -> Int -> GameId -> Maybe (GameId, Position)
+    mRight gf2Check p (GameId br r g)
+      | r < 1 || g < 1 = error "bad GameId"
+      -- Nothing if last Game. NB: WB ends 1 round faster depending on e
+      | r >= 2*p || (br == WB && (r > p || (e == Single && r == p))) = Nothing
+      | br == LB  = Just (GameId LB (r+1) ghalf, pos)   -- standard LB progression
+      | r == 2*p-1 && br == LB && gf2Check && maximum scrs == head scrs = Nothing
+      | r == p    = Just (GameId LB (2*p-1) ghalf, 0)   -- WB winner -> GF1 path
+      | otherwise = Just (GameId WB (r+1) ghalf, pos)   -- standard WB progression
+        where
+          ghalf = (g+1) `div` 2
+          pos
+            | br == WB = if odd g then 0 else 1         -- WB maintains standard alignment
+            | r == 2*p-2 = 1                            -- LB final winner => bottom of GF
+            | r == 2*p-1 = 0                            -- GF(1) winnner moves to the top [semantic]
+            | (r == 1 && odd g) || (r > 1 && odd r) = 1 -- winner usually takes the bottom position
+            | otherwise = if odd g then 0 else 1        -- normal progression only in even rounds + R1
+            -- by placing winner on bottom consistently in odd rounds the bracket moves upward each new refill
+            -- the GF(1) and LB final are special cases that give opposite results to the advanced rule above
 
-    -- complete WBR1 by filling in -1 as WO markers for missing (np'-np) players
-    markWO (x, y) = map (\a -> if a <= np then a else -1) [x,y]
-    makeWbR1 i = (l, Match pl (woScores pl)) where
-      l = MID WB (R 1) (G i)
-      pl = markWO $ seeds p i
-
-    -- make WBR2 and LBR1 shells by using the paired WBR1 results to propagate winners/WO markers
-    propagateWbR1 br ((_, m1), (l2, m2)) = (l, Match pl (woScores pl)) where
-      (l, pl)
-        | br == WB = (MID WB (R 2) (G g), map winner [m1, m2])
-        | br == LB = (MID LB (R 1) (G g), map loser [m1, m2])
-      g = gameNum l2 `div` 2
-
-    -- make LBR2 shells by using LBR1 results to propagate WO markers if 2x
-    makeLbR2 (l1, m1) = (l, Match pl Nothing) where
-      l = MID LB (R 2) (G (gameNum l1))
-      plw = winner m1
-      pl = if odd (gameNum l) then [0, plw] else [plw, 0]
-
-    -- construct (possibly) non-empty rounds
-    wbr1 = map makeWbR1 [1..2^(p-1)]
-    wbr1pairs = take (2^(p-2))
-      $ filter (even . gameNum . fst . snd) $ zip wbr1 (tail wbr1)
-    wbr2 = map (propagateWbR1 WB) wbr1pairs
-    lbr1 = map (propagateWbR1 LB) wbr1pairs
-    lbr2 = map makeLbR2 lbr1
-
-    -- construct (definitely) empty rounds
-    wbRest = concatMap makeRound [3..p] where
-      makeRound r = map (MID WB (R r) . G) [1..2^(p-r)]
-      --bfm = MID LB (R 1) (G 1) -- bronze final here, exception
-
-    lbRest = map gfms [2*p-1, 2*p] ++ concatMap makeRound [3..2*p-2] where
-      makeRound r = map (MID LB (R r) . G) [1..(2^) $ p - 1 - (r+1) `div` 2]
-      gfms r = MID LB (R r) (G 1)
-
-    toMap = Map.fromSet (const (Match [0,0] Nothing)) . Set.fromList
-
-    -- finally, union the mappified brackets
-    wb = Map.union (toMap wbRest) $ Map.fromList $ wbr1 ++ wbr2
-    lb = Map.union (toMap lbRest) $ Map.fromList $ lbr1 ++ lbr2
-    ms = if e == Single then wb else wb `Map.union` lb
+    -- down progress fn : loser moves down to (GameId, Position)
+    mDown :: Int -> GameId -> Maybe (GameId, Position)
+    mDown p (GameId br r g)
+      | e == Single = Nothing
+      -- or case for bf: | e == Single && r == p-1 = Just (MID LB (R 1) (G 1), if odd g then 0 else 1)
+      | r == 2*p-1 = Just (GameId LB (2*p) 1, 1) -- GF(1) loser moves to the bottom
+      | br == LB || r > p = Nothing
+      | r == 1    = Just (GameId LB 1 ghalf, pos)     -- WBR1 -> r=1 g/2 (LBR1 only gets input from WB)
+      | otherwise = Just (GameId LB ((r-1)*2) g, pos) -- WBRr -> 2x as late per round in WB
+        where
+          ghalf = (g+1) `div` 2
+          -- drop on top >R2, and <=2 for odd g to match bracket movement
+          pos = if r > 2 || odd g then 0 else 1
 
 
+-- | temp stuff
 testcase :: IO ()
 testcase = let
-  upd :: MatchId -> [Score] -> State Tournament ()
+  upd :: GameId -> [Score] -> State Tournament ()
   upd id sc = do
     t <- get
     put $ score id sc t
     return ()
-
+  {-
   manipDouble :: State Tournament ()
   manipDouble = do
     --upd (MID WB (R 1) (G 1)) [1,0]
@@ -371,17 +592,17 @@ testcase = let
     upd (MID LB (R 6) (G 1)) [1,2]
 
     return ()
-
+  -}
   manipSingle :: State Tournament ()
   manipSingle = do
-    upd (MID WB (R 1) (G 2)) [2,3]
-    upd (MID WB (R 1) (G 3)) [1,2]
-    upd (MID WB (R 1) (G 4)) [0,1]
+    upd (GameId WB 1 2) [2,3]
+    upd (GameId WB 1 3) [1,2]
+    upd (GameId WB 1 4) [0,1]
 
-    upd (MID WB (R 2) (G 1)) [1,0]
-    upd (MID WB (R 2) (G 2)) [1,0]
+    upd (GameId WB 2 1) [1,0]
+    upd (GameId WB 2 2) [1,0]
 
-    upd (MID WB (R 3) (G 1)) [1,0]
+    upd (GameId WB 3 1) [1,0]
 
     return ()
 
@@ -389,124 +610,12 @@ testcase = let
   in testor $ execState manipSingle $ tournament (Duel Single) 7
 
 
--- | Score a match in a tournament and propagate winners/losers.
--- TODO: make a strict version of this
--- TODO: documentation absorb the individual functions?
--- TODO: test if MID exists, subfns throw if lookup fail
-score :: MatchId -> [Score] -> Tournament -> Tournament
-score id sc trn@(Tourney {rules = r, size = np, matches = ms})
-  | Duel e <- r
-  , Just (Match pls _) <- Map.lookup id ms
-  , all (>0) pls
-  = let msUpd = execState (scoreDuel (pow np) e id sc pls) ms
-        rsUpd = makeResults trn msUpd
-    in trn { matches = msUpd, results = rsUpd }
-
-  | FFA gs adv <- r
-  , Just (Match pls _) <- Map.lookup id ms
-  , any (>0) pls
-  = let msUpd = execState (scoreFFA gs adv id sc pls) ms
-    in trn { matches = msUpd }
-
-  | otherwise = error "match not scorable"
-
-scoreFFA :: GroupSize -> Advancers -> MatchId -> [Score] -> [Int] -> State Matches (Maybe Match)
-scoreFFA (GS _) (Adv _) mid@(MID _ (R r) _) scrs pls = do
-  -- 1. score given match
-  let m = Match pls $ Just scrs
-  modify $ Map.adjust (const m) mid
-
-  -- 2. see if round is over
-  currRnd <- gets $ Map.filterWithKey (\(MID _ (R ri) _) _ -> ri == r)
-  if all (isJust . scores) $ Map.elems currRnd
-    then return Nothing
-    else return Nothing
-
-  return $ Just m
-
--- | Update the scores of a duel in an elimination tournament.
--- Returns an updated tournament with the winner propagated to the next round,
--- and the loser propagated to the loser bracket if applicable.
-scoreDuel :: Int -> Elimination -> MatchId -> [Score] -> [Int] -> State Matches (Maybe Match)
-scoreDuel p e mid scrs pls = do
-  -- 1. score given match
-  let m = Match pls $ Just scrs
-  modify $ Map.adjust (const m) mid
-
-  -- 2. move winner right
-  let nprog = mRight True p mid
-  nres <- playerInsert nprog $ winner m
-
-  -- 3. move loser to down if we were in winners
-  let dprog = mDown p mid
-  dres <- playerInsert dprog $ loser m
-
-  -- 4. check if loser needs WO from LBR1
-  let dprog2 = woCheck p dprog dres
-  uncurry playerInsert $ fromMaybe (Nothing, 0) dprog2
-
-  -- 5. check if winner needs WO from LBR2
-  let nprog2 = woCheck p nprog nres
-  uncurry playerInsert $ fromMaybe (Nothing, 0) nprog2
-
-  return $ Just m
-
-  where
-    -- insert player x into list index idx of mid's players, and woScore it
-    -- progress result determines location and must be passed in as fst arg
-    playerInsert :: Maybe (MatchId, Int) -> Int -> State Matches (Maybe Match)
-    playerInsert Nothing _ = return Nothing
-    playerInsert (Just (mid, idx)) x = do
-      tmap <- get
-      let (updated, tupd) = Map.updateLookupWithKey updFn mid tmap
-      put tupd
-      return updated
-        where updFn _ (Match plsi _) = Just $ Match plsm (woScores plsm) where
-                plsm = if idx == 0 then [x, last plsi] else [head plsi, x]
-
-    -- given tourney power, progress results, and insert results, of previous
-    -- if it was woScored in playerInsert, produce new (progress, winner) pair
-    woCheck :: Int -> Maybe (MatchId, Int) -> Maybe Match -> Maybe (Maybe (MatchId, Int), Int)
-    woCheck p (Just (mid, _)) (Just mi)
-      | w <- winner mi, w > 0 = Just (mRight False p mid, w)
-      | otherwise = Nothing
-    woCheck _ _ _ = Nothing
-
-
-    -- right progress fn: winner moves right to (MatchId, Position)
-    mRight :: Bool -> Int -> MatchId -> Maybe (MatchId, Int)
-    mRight gf2Check p (MID br (R r) (G g))
-      | r < 1 || g < 1 = error "bad MatchId"
-      -- Nothing if last Match. NB: WB ends 1 round faster depending on e
-      | r >= 2*p || (br == WB && (r > p || (e == Single && r == p))) = Nothing
-      | br == LB  = Just (MID LB (R (r+1)) (G ghalf), pos)   -- standard LB progression
-      | r == 2*p-1 && br == LB && gf2Check && maximum scrs == head scrs = Nothing
-      | r == p    = Just (MID LB (R (2*p-1)) (G ghalf), 0)   -- WB winner -> GF1 path
-      | otherwise = Just (MID WB (R (r+1)) (G ghalf), pos)   -- standard WB progression
-        where
-          ghalf = (g+1) `div` 2
-          pos
-            | br == WB = if odd g then 0 else 1         -- WB maintains standard alignment
-            | r == 2*p-2 = 1                            -- LB final winner => bottom of GF
-            | r == 2*p-1 = 0                            -- GF(1) winnner moves to the top [semantic]
-            | (r == 1 && odd g) || (r > 1 && odd r) = 1 -- winner usually takes the bottom position
-            | otherwise = if odd g then 0 else 1        -- normal progression only in even rounds + R1
-            -- by placing winner on bottom consistently in odd rounds the bracket moves upward each new refill
-            -- the GF(1) and LB final are special cases that give opposite results to the advanced rule above
-
-    -- down progress fn : loser moves down to (MatchId, Position)
-    mDown :: Int -> MatchId -> Maybe (MatchId, Int)
-    mDown p (MID br (R r) (G g))
-      -- | e == Single && r == p-1 = Just (MID LB (R 1) (G 1), if odd g then 0 else 1) -- bronze final
-      | e == Single = Nothing
-      | r == 2*p-1 = Just (MID LB (R (2*p)) (G 1), 1) -- GF(1) loser moves to the bottom
-      | br == LB || r > p = Nothing
-      | r == 1    = Just (MID LB (R 1) (G ghalf), pos)     -- WBR1 -> r=1 g/2 (LBR1 only gets input from WB)
-      | otherwise = Just (MID LB (R ((r-1)*2)) (G g), pos) -- WBRr -> 2x as late per round in WB
-        where
-          ghalf = (g+1) `div` 2
-          -- drop on top >R2, and <=2 for odd g to match bracket movement
-          pos = if r > 2 || odd g then 0 else 1
+testor :: Tournament -> IO ()
+testor Tourney { games = ms, results = rs } = do
+  mapM_ print $ Map.assocs ms
+  if isJust rs
+    then mapM_ print $ fromJust rs
+    else print "no results"
 
 
 -- | Checks if a Tournament is valid

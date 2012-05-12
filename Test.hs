@@ -3,10 +3,12 @@
 module Main where
 
 import qualified Game.Tournament as T
+import Game.Tournament (MatchId(..), Tournament(..), Bracket(..), Rules(..))
 import Test.QuickCheck
 import Data.List ((\\), nub, genericLength)
 import Control.Monad (liftM)
-import Test.Framework (defaultMain, testGroup)
+import Control.Monad.State (State, get, put)
+import Test.Framework (defaultMain, testGroup, plusTestOptions, TestOptions)
 import Test.Framework.Providers.QuickCheck2 (testProperty)
 
 -- helper instances for positive short ints
@@ -134,6 +136,7 @@ manipDouble = do
 
 -- -----------------------------------------------------------------------------
 -- Test harness
+durableOpts = TestOptions
 
 tests = [
     testGroup "seeds" [
@@ -145,7 +148,7 @@ tests = [
     , testProperty "robin unique round players" robinProp3
     , testProperty "robin all plaid all" robinProp4
     ]
-  , testGroup "inGroupsOf" [
+  , plusTestOptions durableOpts $ testGroup "inGroupsOf" [
       testProperty "group sizes all <= input s" groupsProp1
     , testProperty "group includes all [1..n]" groupsProp2
     , testProperty "group sum of seeds max diff" groupsProp3
