@@ -28,7 +28,7 @@ module Game.Tournament (
    , duelExpected
 
    -- * Building Block B: Group helpers
-   , inGroupsOf
+   , groups
    , robin
 
    -- * Tournament Types
@@ -74,6 +74,7 @@ import Data.Ord (comparing)
 import Data.Function (on)
 import Data.Bits (shiftL)
 import Data.Maybe (fromJust, isJust, fromMaybe)
+import Control.Monad (when)
 import Control.Monad.State (State, get, put, modify, execState, gets)
 import Data.Map (Map)
 import qualified Data.Map.Lazy as Map
@@ -112,15 +113,15 @@ duelExpected n (a, b) = odd a && even b && a + b == 1 + 2^n
 -- | Splits a numer of players into groups of as close to equal seeding sum
 -- as possible. When groupsize is even and s | n, the seed sum is constant.
 -- Fixes the number of groups as ceil $ n / s, but will reduce s when all groups not full.
-inGroupsOf :: Int -> Int -> [[Int]]
-0 `inGroupsOf` _ = []
-n `inGroupsOf` s = map (sort . filter (<=n) . makeGroup) [1..ngrps] where
+groups :: Int -> Int -> [[Int]]
+groups 0 _ = []
+groups s n = map (sort . filter (<=n) . makeGroup) [1..ngrps] where
   ngrps = ceiling $ fromIntegral n / fromIntegral s
 
   -- find largest 0<gs<=s s.t. even distribution => at least one full group, i.e. gs*ngrps - n < ngrps
   gs = until ((< ngrps + n) . (*ngrps)) (subtract 1) s
 
-  modl = ngrps*gs -- modl may be bigger than n, e.e. inGroupsOf 10 4 has a 12 model
+  modl = ngrps*gs -- modl may be bigger than n, e.e. groups 4 10 has a 12 model
   npairs = ngrps * (gs `div` 2)
   pairs = zip [1..npairs] [modl, modl-1..]
   leftovers = [npairs+1, npairs+2 .. modl-npairs] -- [1..modl] \\ e in pairs
@@ -185,6 +186,7 @@ type Games = Map GameId Game
 type Position = Int
 type Score = Int
 type Player = Int
+type Seed = Int
 
 -- | Record of each player's accomplishments in the current tournament.
 data Result = Result {
@@ -272,12 +274,12 @@ tournament rs@(FFA gs adv) np
     --TODO: allow crossover matches when there are gaps intelligently..
     let minsize = minimum . map length
         hideSeeds = map $ map $ const 0
-        nextGroup g = hideSeeds $ leftover `inGroupsOf` gs where
+        nextGroup g = hideSeeds . groups gs $ leftover where
           -- force zero non-eliminating matches unless only 1 left
           advm = max 1 $ adv - (gs - minsize g)
           leftover = length g * advm
 
-        playoffs = takeWhile ((>1) . length) . iterate nextGroup $ np `inGroupsOf` gs
+        playoffs = takeWhile ((>1) . length) . iterate nextGroup . groups gs $ np
         final = nextGroup $ last playoffs
         grps = playoffs ++ [final]
 
@@ -429,57 +431,52 @@ makeResults (Tourney {rules = FFA _ _, size = _}) ms
 -- TODO: documentation absorb the individual functions?
 -- TODO: test if MID exists, subfns throw if lookup fail
 score :: GameId -> [Score] -> Tournament -> Tournament
-score id sc trn@(Tourney { rules = r, size = np, games = ms })
+score gid sc trn@(Tourney { rules = r, size = np, games = ms })
   | Duel e <- r
-  , Just (Game pls _) <- Map.lookup id ms
+  , Just (Game pls _) <- Map.lookup gid ms
   , all (>0) pls
-  = let msUpd = execState (scoreDuel (pow np) e id sc pls) ms
+  = let msUpd = execState (scoreDuel (pow np) e gid sc pls) ms
         rsUpd = makeResults trn msUpd
     in trn { games = msUpd, results = rsUpd }
 
-  | FFA s adv <- r
-  , Just (Game pls _) <- Map.lookup id ms
+  | FFA s _ <- r
+  , Just (Game pls _) <- Map.lookup gid ms
   , any (>0) pls
-  = let msUpd = execState (scoreFFA s adv id sc pls) ms
+  = let msUpd = execState (scoreFFA s gid sc pls) ms
     in trn { games = msUpd }
 
   | otherwise = error "game not scorable"
 
-scoreFFA :: GroupSize -> Advancers -> GameId -> [Score] -> [Player] -> State Games (Maybe Game)
-scoreFFA gs _ gid@(GameId _ r _) scrs pls = do
+scoreFFA :: GroupSize -> GameId -> [Score] -> [Player] -> State Games ()
+scoreFFA gs gid@(GameId _ r _) scrs pls = do
   -- 1. score given game
   let m = Game pls $ Just scrs
   modify $ Map.adjust (const m) gid
 
-  -- 2. see if round is over
-  --currRnd <- gets (Map.filterWithKey ((==r) . round)))
+  -- 2. if end of round, fill in next round
   currRnd <- gets $ Map.elems . Map.filterWithKey (const . (==r) . round)
-  if all (isJust . result) currRnd
-    then do
-      -- recreate grps (with seeds) from construction
-      numNext <- gets $ Map.foldr ((+) . length . players) 0
-        . Map.filterWithKey (const . (==r+1) . round)
-      -- if numNext is zero then grps is []
+  when (all (isJust . result) currRnd) $ do
+    -- find the number of players we need in next round
+    numNext <- gets $ Map.foldr ((+) . length . players) 0
+                    . Map.filterWithKey (const . (==r+1) . round)
+    -- recreate next round by using last round results as new seeding
+    -- update next round by overwriting duplicate keys in next round
+    modify $ Map.unionWith const $ makeRnd currRnd numNext
+    return ()
 
-      -- currRnd -> [(Seed, Player)] map
-      let seedList = seedToPlayer currRnd
-
-      -- this should map the right groups for next round from
-      --let grps = map (map fromJust . (\p -> lookup p seedList)) $ numNext `inGroupsOf` gs
-      --TODO: lambda fix
-
-
-
-      {- NEED TO:
-      replace the numbers generated by inGroupsOf with by substituting from scoreSum list
-      modify $ the n found matches in r+1 with the sublists from line above and scores = Nothing
-      -}
-      return Nothing
-    else return Nothing
-
-  return $ Just m
   where
-    seedToPlayer rnd = zip [1..] $ map fst . gameSort . concatMap gameZip $ rnd
+    -- make round (r+1) from the games in round r and the top n to take
+    makeRnd :: [Game] -> Size -> Games
+    makeRnd gms = Map.fromList . nextGames . grpMap (seedToPlayer gms) . groups gs
+
+    seedToPlayer :: [Game] -> [(Seed, Player)]
+    seedToPlayer = zip [1..] . map fst . gameSort . concatMap gameZip
+
+    grpMap :: [(Seed, Player)] -> [[Seed]] -> [[Player]]
+    grpMap assoc = map . map $ fromJust . flip lookup assoc
+
+    nextGames :: [[Player]] -> [(GameId, Game)]
+    nextGames = zipWith (\i g -> (GameId WB (r+1) i, Game g Nothing)) [1..]
 
 -- | Update the scores of a duel in an elimination tournament.
 -- Returns an updated tournament with the winner propagated to the next round,

@@ -3,7 +3,7 @@
 module Main where
 
 import qualified Game.Tournament as T
-import Game.Tournament (MatchId(..), Tournament(..), Bracket(..), Rules(..))
+--import Game.Tournament (GameId(..), Bracket(..), Rules(..))
 import Test.QuickCheck
 import Data.List ((\\), nub, genericLength)
 import Control.Monad (liftM)
@@ -94,37 +94,6 @@ upd id sc = do
   put $ T.score id sc t
   return ()
 
-manipSingle :: State Tournament ()
-manipSingle = do
-  upd (MID WB (R 1) (G 2)) [2,3]
-  upd (MID WB (R 1) (G 3)) [1,2]
-  upd (MID WB (R 1) (G 4)) [0,1]
-
-  upd (MID WB (R 2) (G 1)) [1,0]
-  upd (MID WB (R 2) (G 2)) [1,0]
-
-  upd (MID WB (R 3) (G 1)) [1,0]
-  return ()
-
-manipDouble :: State Tournament ()
-manipDouble = do
-  --upd (MID WB (R 1) (G 1)) [1,0]
-  upd (MID WB (R 1) (G 2)) [0,1]
-  --upd (MID WB (R 1) (G 3)) [1,0]
-  --upd (MID WB (R 1) (G 4)) [0,1]
-
-  upd (MID WB (R 2) (G 1)) [1,0]
-  upd (MID WB (R 2) (G 2)) [0,1]
-
-  upd (MID LB (R 2) (G 1)) [1,0]
-  upd (MID LB (R 3) (G 1)) [1,0]
-
-  upd (MID WB (R 3) (G 1)) [1,0]
-  upd (MID LB (R 4) (G 1)) [1,0]
-  upd (MID LB (R 5) (G 1)) [0,3] -- gf1
-  upd (MID LB (R 6) (G 1)) [1,2]
-
-  return ()
 
 -- strategy:
 -- generate a tournament of size SInt
