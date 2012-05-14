@@ -457,10 +457,9 @@ scoreFFA gs _ gid@(GameId _ r _) scrs pls = do
   if all (isJust . result) currRnd
     then do
       -- recreate grps (with seeds) from construction
-      numNext <- gets $ sum
-        . Map.foldr ((:) . length . players) []
+      numNext <- gets $ Map.foldr ((+) . length . players) 0
         . Map.filterWithKey (const . (==r+1) . round)
-      --TODO: protect against zero numNext
+      -- if numNext is zero then grps is []
 
       -- currRnd -> [(Seed, Player)] map
       let seedList = seedToPlayer currRnd
