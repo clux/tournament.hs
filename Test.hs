@@ -8,7 +8,8 @@ import Test.QuickCheck
 import Data.List ((\\), nub, genericLength)
 import Control.Monad (liftM)
 import Control.Monad.State (State, get, put)
-import Test.Framework (defaultMain, testGroup, plusTestOptions, TestOptions)
+import Test.Framework (defaultMain, testGroup, plusTestOptions)
+import Test.Framework.Options
 import Test.Framework.Providers.QuickCheck2 (testProperty)
 
 -- helper instances for positive short ints
@@ -24,20 +25,20 @@ type GroupArgs = (RInt, SInt)
 
 -- group sizes <= input size
 groupsProp1 :: GroupArgs -> Bool
-groupsProp1 (n', s') = maximum (map length (n `T.inGroupsOf` s)) <= s where
+groupsProp1 (n', s') = maximum (map length (T.groups s n)) <= s where
   (n, s) = (fromIntegral n', fromIntegral s')
 
 -- players included == [1..n]
 groupsProp2 :: GroupArgs -> Bool
 groupsProp2 (n', s') = length pls == n && null (pls \\ [1..n]) where
-  pls = concat $ n `T.inGroupsOf` s
+  pls = concat $ T.groups s n
   (n, s) = (fromIntegral n', fromIntegral s')
 
 -- sum of seeds of groups in full groups differ by at most num_groups
 groupsProp3 :: GroupArgs -> Property
 groupsProp3 (n', s') = n `mod` s == 0 ==>
   maximum gsums <= minimum gsums + length gs where
-    gs = n `T.inGroupsOf` s
+    gs = T.groups s n
     gsums = map sum gs
     (n, s) = (fromIntegral n', fromIntegral s')
 
@@ -45,7 +46,7 @@ groupsProp3 (n', s') = n `mod` s == 0 ==>
 groupsProp4 :: GroupArgs -> Property
 groupsProp4 (n', s') = n `mod` s == 0 && even s ==>
   maximum gsums == minimum gsums where
-    gsums = map sum $ n `T.inGroupsOf` s
+    gsums = map sum $ T.groups s n
     (n, s) = (fromIntegral n', fromIntegral s')
 
 -- -----------------------------------------------------------------------------
@@ -88,7 +89,7 @@ seedsProps (p', i') = i < 2^(p-1) ==> T.duelExpected p $ T.seeds p i
 -- elimination
 -- test positive n <= 256
 
-upd :: MatchId -> [Score] -> State Tournament ()
+upd :: T.GameId -> [T.Score] -> State T.Tournament ()
 upd id sc = do
   t <- get
   put $ T.score id sc t
@@ -105,7 +106,14 @@ upd id sc = do
 
 -- -----------------------------------------------------------------------------
 -- Test harness
-durableOpts = TestOptions
+durableOpts = TestOptions {
+  topt_seed = Nothing
+, topt_maximum_generated_tests = Nothing
+, topt_maximum_unsuitable_generated_tests = Just 10000
+, topt_maximum_test_size = Nothing
+, topt_maximum_test_depth = Nothing
+, topt_timeout = Nothing
+}
 
 tests = [
     testGroup "seeds" [
