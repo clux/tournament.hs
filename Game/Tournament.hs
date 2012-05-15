@@ -461,7 +461,7 @@ scoreFFA gs gid@(GameId _ r _) scrs pls = do
                     . Map.filterWithKey (const . (==r+1) . round)
     -- recreate next round by using last round results as new seeding
     -- update next round by overwriting duplicate keys in next round
-    modify $ Map.unionWith const $ makeRnd currRnd numNext
+    modify $ flip (Map.unionWith (flip const)) $ makeRnd currRnd numNext
     return ()
 
   where
@@ -477,6 +477,7 @@ scoreFFA gs gid@(GameId _ r _) scrs pls = do
 
     nextGames :: [[Player]] -> [(GameId, Game)]
     nextGames = zipWith (\i g -> (GameId WB (r+1) i, Game g Nothing)) [1..]
+
 
 -- | Update the scores of a duel in an elimination tournament.
 -- Returns an updated tournament with the winner propagated to the next round,
