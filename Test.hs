@@ -61,7 +61,7 @@ robinProp1 n =
 -- each round contains the correct number of matches
 robinProp2 :: RInt -> Bool
 robinProp2 n =
-  all (== n `div` 2) $ map (genericLength) $ T.robin n
+  all (== n `div` 2) $ map genericLength $ T.robin n
 
 -- a player is uniquely listed in each round
 robinProp3 :: RInt -> Bool
