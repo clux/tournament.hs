@@ -70,44 +70,47 @@ module Game.Tournament (
    , testcase
 ) where
 
-import Data.Char (intToDigit, digitToInt)
+import Prelude hiding (round)
 import Numeric (showIntAtBase, readInt)
+import Data.Char (intToDigit, digitToInt)
 import Data.List (sort, sortBy, group, groupBy, genericTake)
 import Data.Ord (comparing)
 import Data.Function (on)
 import Data.Bits (shiftL)
 import Data.Maybe (fromJust, isJust, fromMaybe)
-import Control.Monad (when)
-import Control.Monad.State (State, get, put, modify, execState, gets)
-import Data.Map (Map)
 import qualified Data.Map.Lazy as Map
+import Data.Map (Map)
 import qualified Data.Set as Set
 import Control.Arrow ((&&&), second)
-import System.IO.Unsafe (unsafePerformIO) -- while developing
-import Prelude hiding (round)
+import Control.Monad (when)
+import Control.Monad.State (State, get, put, modify, execState, gets)
+--import System.IO.Unsafe (unsafePerformIO) -- while developing
 
 -- -----------------------------------------------------------------------------
 -- TODO should somehow ensure 0 < i <= 2^(p-1) in the next fn
 -- | Duel tournaments is based on the theory from <http://clux.org/entries/view/2407>
 
--- | Computes both the player seeds (in order) for a duel elimiation match.
--- The first argument, p, is the power of the tournament,
--- and the second, i, is the match number.
--- Well-defined for p > 0 and 0 < i <= 2^(p-1)
+-- | Computes both the upper and lower player seeds for a duel elimiation match.
+-- The first argument, p, is the power of the tournament; 2^num_players rounding up to nearest power of 2
+-- and the second, i, is the match number. Well-defined for p > 0 and 0 < i <= 2^(p-1).
 seeds :: Int -> Int -> (Int, Int)
-seeds p i = (1 - lastSeed + 2^p, lastSeed) where
-  lastSeed = let (k, r) = ((floor . logBase 2 . fromIntegral) i, i - 2^k) in
-    case r of
-      0 -> 2^(p-k)
-      _ -> 2^(p-k-1) + nr `shiftL` (p - length bstr) where
-        bstr = reverse $ showIntAtBase 2 intToDigit (i - 2*r) ""
-        nr = fst $ head $ readInt 2 (`elem` "01") digitToInt bstr
+seeds p i
+  | p > 0, i > 0, i <= 2^(p-1) = (1 - lastSeed + 2^p, lastSeed)
+  | otherwise = error "seeds called outside well defined power game region"
+  where
+    lastSeed = let (k, r) = ((floor . logBase 2 . fromIntegral) i, i - 2^k) in
+      case r of
+        0 -> 2^(p-k)
+        _ -> 2^(p-k-1) + nr `shiftL` (p - length bstr) where
+          bstr = reverse $ showIntAtBase 2 intToDigit (i - 2*r) ""
+          nr = fst $ head $ readInt 2 (`elem` "01") digitToInt bstr
+
 
 -- | Check if the 3 criteria for perfect seeding holds for the current
 -- power and seed pair arguments.
 -- This can be used to make a measure of how good the seeding was in retrospect
 duelExpected :: Integral a => a -> (a, a) -> Bool
-duelExpected n (a, b) = odd a && even b && a + b == 1 + 2^n
+duelExpected p (a, b) = odd a && even b && a + b == 1 + 2^p
 
 -- -----------------------------------------------------------------------------
 -- Group helpers
@@ -260,7 +263,12 @@ woScores ps
   | 0 `notElem` ps && -1 `elem` ps = Just $ map (\x -> if x == -1 then 0 else 1) ps
   | otherwise = Nothing
 
--- | Get the list of all GameIds in a Tournament
+-- | Get the list of all GameIds in a Tournament.
+-- This list is also ordered by GameId's Ord, and in fact,
+-- if the corresponding games were scored in this order, the tournament would finish,
+-- and scorable would only return False for a few special walkover games.
+-- TODO: if introducing crossovers, this would not be true for LB crossovers
+-- => need to place them in WB in an 'interim round'
 keys :: Tournament -> [GameId]
 keys = Map.keys . games
 
@@ -452,20 +460,23 @@ scorable gid = isJust . playersReady gid
 -- | Score a match in a tournament and propagate winners/losers.
 -- If match is not 'scorable', the Tournament will pass through unchanged.
 -- TODO: make a strict version of this
--- TODO: documentation absorb the individual functions?
+-- TODO: documentation absorb the individual functions? either copy it all here, or have it internal-exposed
 score :: GameId -> [Score] -> Tournament -> Tournament
 score gid sc trn@(Tourney { rules = r, size = np, games = ms })
   | Duel e <- r
   , Just pls <- playersReady gid trn
+  , length sc == 2
   = let msUpd = execState (scoreDuel (pow np) e gid sc pls) ms
         rsUpd = makeResults trn msUpd
     in trn { games = msUpd, results = rsUpd }
 
   | FFA s _ <- r
   , Just pls <- playersReady gid trn
+  , length sc == length pls
   = let msUpd = execState (scoreFFA s gid sc pls) ms
     in trn { games = msUpd }
 
+  -- somewhat less ideally, if length sc /= length pls this now also fails silently even if socable passes
   | otherwise = trn
 
 
@@ -526,8 +537,7 @@ scoreDuel p e gid scrs pls = do
   let nprog2 = woCheck p nprog nres
   uncurry playerInsert $ fromMaybe (Nothing, 0) nprog2
 
-  return $ Just m
-
+  return Nothing
   where
     -- insert player x into list index idx of mid's players, and woScore it
     -- progress result determines location and must be passed in as fst arg
@@ -551,7 +561,6 @@ scoreDuel p e gid scrs pls = do
       | w <- winner mg, w > 0 = Just (mRight False p gid, w)
       | otherwise = Nothing
     woCheck _ _ _ = Nothing
-
 
     -- right progress fn: winner moves right to (GameId, Position)
     mRight :: Bool -> Int -> GameId -> Maybe (GameId, Position)
@@ -589,19 +598,14 @@ scoreDuel p e gid scrs pls = do
           -- drop on top >R2, and <=2 for odd g to match bracket movement
           pos = if r > 2 || odd g then 0 else 1
 
+
+-- testing stuff
 upd :: [Score] -> GameId -> State Tournament ()
 upd sc id = do
   t <- get
   put $ score id sc t
   return ()
 
-{- TODO:
-drop downs from WBR2 -> LBR2 either has wrong position
-or progressions from LBR1 has wrong position
-FIX
-interaction between line 572 and 589
-
--}
 manipDuel :: [GameId] -> State Tournament ()
 manipDuel keys = mapM_ (upd [1,0]) keys
 

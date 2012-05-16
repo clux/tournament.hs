@@ -92,39 +92,35 @@ seedsProps (p', i') = i < 2^(p-1) ==> T.duelExpected p $ T.seeds p i
 -- elimination
 -- test 4 <= n <= 256 <==> 2 <= p <= 8
 
+-- stateful helpers to score one and all games simply..
 upd :: [T.Score] -> GameId -> State Tournament ()
 upd sc id = do
   t <- get
   put $ T.score id sc t
   return ()
 
-manipDuelLeft :: [GameId] -> State Tournament ()
-manipDuelLeft gs = mapM_ (upd [1,0]) $ gs
-
-manipDuelRight :: [GameId] -> State Tournament ()
-manipDuelRight gs = mapM_ (upd [0,1]) $ gs
+manipDuel :: Bool -> [GameId] -> State Tournament ()
+manipDuel isLeft = mapM_ $ upd $ if isLeft then [1,0] else [0,1]
 
 -- When scoring all matches in order of keys -
 -- i.e. WB by round inc, then LB by round inc -
 -- no game waits for anything, so the results exist at end
 duelScorable :: Bool -> Elimination -> PInt -> Bool
-duelScorable b e p' = cond1 && cond2 where
+duelScorable isLeft e p' = cond1 && cond2 where
   cond1 = isJust . T.results $ t
   cond2 = length r == 2^p
   r = fromJust . T.results $ t
-  t = execState (fn (T.keys blank)) $ blank
-  fn = if b then manipDuelLeft else manipDuelRight
+  t = execState (manipDuel isLeft (T.keys blank)) $ blank
   blank = T.tournament (Duel e) (2^p)
   p = fromIntegral p'
 
 -- Similar to above, but start out with 2^p + 1 players to check WOs
 duelWoScorable :: Bool -> Elimination -> PInt -> Bool
-duelWoScorable b e p' = cond1 && cond2 where
+duelWoScorable isLeft e p' = cond1 && cond2 where
   cond1 = isJust . T.results $ t
   cond2 = length r == np
   r = fromJust . T.results $ t
-  t = execState (fn (T.keys blank)) $ blank
-  fn = if b then manipDuelLeft else manipDuelRight
+  t = execState (manipDuel isLeft (T.keys blank)) $ blank
   blank = T.tournament (Duel e) np
   np = 2^(p-1) + 1  -- but we still only have one more player than 2^p'
   p = 1 + fromIntegral p' -- ensuring power is round up
@@ -144,7 +140,7 @@ shortOpts = defOpts {
 
 tests = [
     testGroup "seeds" [
-      testProperty "seeds produce duelValid True pairs" seedsProps
+      testProperty "seeds produce duelExpected valid pairs" seedsProps
     ]
   , testGroup "robin" [
       testProperty "robin num rounds" robinProp1
@@ -163,10 +159,10 @@ tests = [
     , testProperty "Duel Single right" (duelScorable False Single)
     , testProperty "Duel Double left" (duelScorable True Double)
     , testProperty "Duel Double left" (duelScorable False Double)
-    , testProperty "Duel Single left wo" (duelScorable True Single)
-    , testProperty "Duel Single right wo" (duelScorable False Single)
-    , testProperty "Duel Double left wo" (duelScorable True Double)
-    , testProperty "Duel Double left wo" (duelScorable False Double)
+    , testProperty "Duel Single left wo" (duelWoScorable True Single)
+    , testProperty "Duel Single right wo" (duelWoScorable False Single)
+    , testProperty "Duel Double left wo" (duelWoScorable True Double)
+    , testProperty "Duel Double left wo" (duelWoScorable False Double)
     ]
   ]
 
