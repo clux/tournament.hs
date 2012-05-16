@@ -104,17 +104,30 @@ manipDuelLeft gs = mapM_ (upd [1,0]) $ gs
 manipDuelRight :: [GameId] -> State Tournament ()
 manipDuelRight gs = mapM_ (upd [0,1]) $ gs
 
+-- When scoring all matches in order of keys -
+-- i.e. WB by round inc, then LB by round inc -
+-- no game waits for anything, so the results exist at end
 duelScorable :: Bool -> Elimination -> PInt -> Bool
 duelScorable b e p' = cond1 && cond2 where
   cond1 = isJust . T.results $ t
-  cond2 = (2^p) == length r
+  cond2 = length r == 2^p
   r = fromJust . T.results $ t
   t = execState (fn (T.keys blank)) $ blank
   fn = if b then manipDuelLeft else manipDuelRight
   blank = T.tournament (Duel e) (2^p)
   p = fromIntegral p'
 
--- TODO: do one testing walkovers similarly by taking 2^(p-1) + 1 players
+-- Similar to above, but start out with 2^p + 1 players to check WOs
+duelWoScorable :: Bool -> Elimination -> PInt -> Bool
+duelWoScorable b e p' = cond1 && cond2 where
+  cond1 = isJust . T.results $ t
+  cond2 = length r == np
+  r = fromJust . T.results $ t
+  t = execState (fn (T.keys blank)) $ blank
+  fn = if b then manipDuelLeft else manipDuelRight
+  blank = T.tournament (Duel e) np
+  np = 2^(p-1) + 1  -- but we still only have one more player than 2^p'
+  p = 1 + fromIntegral p' -- ensuring power is round up
 
 -- -----------------------------------------------------------------------------
 -- Test harness
@@ -150,6 +163,10 @@ tests = [
     , testProperty "Duel Single right" (duelScorable False Single)
     , testProperty "Duel Double left" (duelScorable True Double)
     , testProperty "Duel Double left" (duelScorable False Double)
+    , testProperty "Duel Single left wo" (duelScorable True Single)
+    , testProperty "Duel Single right wo" (duelScorable False Single)
+    , testProperty "Duel Double left wo" (duelScorable True Double)
+    , testProperty "Duel Double left wo" (duelScorable False Double)
     ]
   ]
 
