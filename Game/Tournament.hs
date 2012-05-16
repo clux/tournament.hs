@@ -36,7 +36,8 @@ module Game.Tournament (
    , Elimination(..)
    , Bracket(..)
    , Rules(..)
-   , Results
+   , Results -- no constructor
+   , results
 
    , Result  -- no constructor
    , player
@@ -58,6 +59,8 @@ module Game.Tournament (
    , tournament
    , score
    , count
+   , scorable
+   , keys
 
    -- -* Match Inspection
    --, scores
@@ -257,6 +260,10 @@ woScores ps
   | 0 `notElem` ps && -1 `elem` ps = Just $ map (\x -> if x == -1 then 0 else 1) ps
   | otherwise = Nothing
 
+-- | Get the list of all GameIds in a Tournament
+keys :: Tournament -> [GameId]
+keys = Map.keys . games
+
 -- | Create match shells for an FFA elimination tournament.
 -- Result comes pre-filled in with either top advancers or advancers `intersect` seedList.
 -- This means what the player numbers represent is only fixed per round.
@@ -425,27 +432,42 @@ makeResults (Tourney {rules = FFA _ _, size = _}) ms
     scorify :: Results
     scorify = [Result 0 0 0 0]
 
+-- TODO: should also check that we're not scoring past matches!
+playersReady :: GameId -> Tournament -> Maybe [Player]
+playersReady gid (Tourney { rules = r, games = ms})
+  | Duel _ <- r
+  , Just (Game pls _) <- Map.lookup gid ms
+  , all (>0) pls
+  = Just pls
+  | FFA _ _ <- r
+  , Just (Game pls _) <- Map.lookup gid ms
+  , any (>0) pls
+  = Just pls
+  | otherwise = Nothing
+
+-- | Check if a GameId exists and is ready to be scored through 'score'.
+scorable :: GameId -> Tournament -> Bool
+scorable gid = isJust . playersReady gid
 
 -- | Score a match in a tournament and propagate winners/losers.
+-- If match is not 'scorable', the Tournament will pass through unchanged.
 -- TODO: make a strict version of this
 -- TODO: documentation absorb the individual functions?
--- TODO: test if MID exists, subfns throw if lookup fail
 score :: GameId -> [Score] -> Tournament -> Tournament
 score gid sc trn@(Tourney { rules = r, size = np, games = ms })
   | Duel e <- r
-  , Just (Game pls _) <- Map.lookup gid ms
-  , all (>0) pls
+  , Just pls <- playersReady gid trn
   = let msUpd = execState (scoreDuel (pow np) e gid sc pls) ms
         rsUpd = makeResults trn msUpd
     in trn { games = msUpd, results = rsUpd }
 
   | FFA s _ <- r
-  , Just (Game pls _) <- Map.lookup gid ms
-  , any (>0) pls
+  , Just pls <- playersReady gid trn
   = let msUpd = execState (scoreFFA s gid sc pls) ms
     in trn { games = msUpd }
 
-  | otherwise = error "game not scorable"
+  | otherwise = trn
+
 
 scoreFFA :: GroupSize -> GameId -> [Score] -> [Player] -> State Games ()
 scoreFFA gs gid@(GameId _ r _) scrs pls = do
@@ -542,12 +564,13 @@ scoreDuel p e gid scrs pls = do
       | r == p    = Just (GameId LB (2*p-1) ghalf, 0)   -- WB winner -> GF1 path
       | otherwise = Just (GameId WB (r+1) ghalf, pos)   -- standard WB progression
         where
-          ghalf = (g+1) `div` 2
+          ghalf = if br == LB && odd r then g else (g+1) `div` 2
           pos
             | br == WB = if odd g then 0 else 1         -- WB maintains standard alignment
             | r == 2*p-2 = 1                            -- LB final winner => bottom of GF
             | r == 2*p-1 = 0                            -- GF(1) winnner moves to the top [semantic]
-            | (r == 1 && odd g) || (r > 1 && odd r) = 1 -- winner usually takes the bottom position
+            | r > 1 && odd r = 1                        -- winner usually takes the bottom position
+            | r == 1 = if odd g then 1 else 0           -- first rounds sometimes goto bottom
             | otherwise = if odd g then 0 else 1        -- normal progression only in even rounds + R1
             -- by placing winner on bottom consistently in odd rounds the bracket moves upward each new refill
             -- the GF(1) and LB final are special cases that give opposite results to the advanced rule above
@@ -566,57 +589,31 @@ scoreDuel p e gid scrs pls = do
           -- drop on top >R2, and <=2 for odd g to match bracket movement
           pos = if r > 2 || odd g then 0 else 1
 
+upd :: [Score] -> GameId -> State Tournament ()
+upd sc id = do
+  t <- get
+  put $ score id sc t
+  return ()
 
--- | temp stuff
-testcase :: IO ()
-testcase = let
-  upd :: GameId -> [Score] -> State Tournament ()
-  upd id sc = do
-    t <- get
-    put $ score id sc t
-    return ()
-  {-
-  manipDouble :: State Tournament ()
-  manipDouble = do
-    --upd (MID WB (R 1) (G 1)) [1,0]
-    upd (MID WB (R 1) (G 2)) [0,1]
-    --upd (MID WB (R 1) (G 3)) [1,0]
-    --upd (MID WB (R 1) (G 4)) [0,1]
+{- TODO:
+drop downs from WBR2 -> LBR2 either has wrong position
+or progressions from LBR1 has wrong position
+FIX
+interaction between line 572 and 589
 
-    upd (MID WB (R 2) (G 1)) [1,0]
-    upd (MID WB (R 2) (G 2)) [0,1]
-
-    upd (MID LB (R 2) (G 1)) [1,0]
-    upd (MID LB (R 3) (G 1)) [1,0]
-
-    upd (MID WB (R 3) (G 1)) [1,0]
-    upd (MID LB (R 4) (G 1)) [1,0]
-    upd (MID LB (R 5) (G 1)) [0,3] -- gf1
-    upd (MID LB (R 6) (G 1)) [1,2]
-
-    return ()
-  -}
-  manipSingle :: State Tournament ()
-  manipSingle = do
-    upd (GameId WB 1 2) [2,3]
-    upd (GameId WB 1 3) [1,2]
-    upd (GameId WB 1 4) [0,1]
-
-    upd (GameId WB 2 1) [1,0]
-    upd (GameId WB 2 2) [1,0]
-
-    upd (GameId WB 3 1) [1,0]
-
-    return ()
-
-  --a <- testor $ execState manipDouble $ tournament (Duel Double) 5
-  in testor $ execState manipSingle $ tournament (Duel Single) 7
-
+-}
+manipDuel :: [GameId] -> State Tournament ()
+manipDuel keys = mapM_ (upd [1,0]) keys
 
 testor :: Tournament -> IO ()
 testor Tourney { games = ms, results = rs } = do
   mapM_ print $ Map.assocs ms
   maybe (print "no results") (mapM_ print) rs
+
+testcase :: IO ()
+testcase = do
+  let t = tournament (Duel Double) 8
+  testor $ execState (manipDuel (keys t)) t
 
 -- | Checks if a Tournament is valid
 {-

@@ -1,13 +1,14 @@
 -- | Tests for the 'Tournament' module.
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Main where
-
 import qualified Game.Tournament as T
---import Game.Tournament (GameId(..), Bracket(..), Rules(..))
+import Game.Tournament (Elimination(..), GameId(..), Rules(..), Tournament(..))
 import Test.QuickCheck
 import Data.List ((\\), nub, genericLength)
+import Data.Maybe (isJust, fromJust)
+import Data.Monoid
 import Control.Monad (liftM)
-import Control.Monad.State (State, get, put)
+import Control.Monad.State (State, get, put, execState)
 import Test.Framework (defaultMain, testGroup, plusTestOptions)
 import Test.Framework.Options
 import Test.Framework.Providers.QuickCheck2 (testProperty)
@@ -15,8 +16,10 @@ import Test.Framework.Providers.QuickCheck2 (testProperty)
 -- helper instances for positive short ints
 newtype RInt = RInt {rInt :: Int} deriving (Eq, Ord, Show, Num, Integral, Real, Enum)
 newtype SInt = SInt {sInt :: Int} deriving (Eq, Ord, Show, Num, Integral, Real, Enum)
+newtype PInt = PInt {pInt :: Int} deriving (Eq, Ord, Show, Num, Integral, Real, Enum)
 instance Arbitrary RInt where arbitrary = liftM RInt (choose (1, 256) :: Gen Int)
 instance Arbitrary SInt where arbitrary = liftM SInt (choose (1, 16) :: Gen Int)
+instance Arbitrary PInt where arbitrary = liftM PInt (choose (2, 8) :: Gen Int)
 
 -- -----------------------------------------------------------------------------
 -- inGroupsOf
@@ -87,32 +90,43 @@ seedsProps (p', i') = i < 2^(p-1) ==> T.duelExpected p $ T.seeds p i
 
 -- -----------------------------------------------------------------------------
 -- elimination
--- test positive n <= 256
+-- test 4 <= n <= 256 <==> 2 <= p <= 8
 
-upd :: T.GameId -> [T.Score] -> State T.Tournament ()
-upd id sc = do
+upd :: [T.Score] -> GameId -> State Tournament ()
+upd sc id = do
   t <- get
   put $ T.score id sc t
   return ()
 
+manipDuelLeft :: [GameId] -> State Tournament ()
+manipDuelLeft gs = mapM_ (upd [1,0]) $ gs
 
--- strategy:
--- generate a tournament of size SInt
--- of Type Elimination determined by bool.
--- get all matches ready to be scored:
--- msrdy <- gets $ Map.filter (all (>0) scores)
--- score all matches:
--- Map.map (swap upd [1,0]) -- always score == [1,0]
+manipDuelRight :: [GameId] -> State Tournament ()
+manipDuelRight gs = mapM_ (upd [0,1]) $ gs
+
+duelScorable :: Bool -> Elimination -> PInt -> Bool
+duelScorable b e p' = cond1 && cond2 where
+  cond1 = isJust . T.results $ t
+  cond2 = (2^p) == length r
+  r = fromJust . T.results $ t
+  t = execState (fn (T.keys blank)) $ blank
+  fn = if b then manipDuelLeft else manipDuelRight
+  blank = T.tournament (Duel e) (2^p)
+  p = fromIntegral p'
+
+-- TODO: do one testing walkovers similarly by taking 2^(p-1) + 1 players
 
 -- -----------------------------------------------------------------------------
 -- Test harness
-durableOpts = TestOptions {
-  topt_seed = Nothing
-, topt_maximum_generated_tests = Nothing
-, topt_maximum_unsuitable_generated_tests = Just 10000
-, topt_maximum_test_size = Nothing
-, topt_maximum_test_depth = Nothing
-, topt_timeout = Nothing
+
+defOpts = mempty :: TestOptions
+
+durableOpts = defOpts {
+  topt_maximum_unsuitable_generated_tests = Just 10000
+}
+
+shortOpts = defOpts {
+  topt_maximum_generated_tests = Just 5
 }
 
 tests = [
@@ -125,11 +139,17 @@ tests = [
     , testProperty "robin unique round players" robinProp3
     , testProperty "robin all plaid all" robinProp4
     ]
-  , plusTestOptions durableOpts $ testGroup "inGroupsOf" [
+  , plusTestOptions durableOpts $ testGroup "groups" [
       testProperty "group sizes all <= input s" groupsProp1
     , testProperty "group includes all [1..n]" groupsProp2
     , testProperty "group sum of seeds max diff" groupsProp3
     , testProperty "group sum of seeds min diff" groupsProp4
+    ]
+  , plusTestOptions shortOpts $ testGroup "duel elimination scorable" [
+      testProperty "Duel Single left" (duelScorable True Single)
+    , testProperty "Duel Single right" (duelScorable False Single)
+    , testProperty "Duel Double left" (duelScorable True Double)
+    , testProperty "Duel Double left" (duelScorable False Double)
     ]
   ]
 
