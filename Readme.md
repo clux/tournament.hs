@@ -2,9 +2,9 @@
 
 Tournament is a pure library for generating tournanaments and handling match scoring and
 propagation of winners/losers internally.
-It is currently in heavy development, see the first
+It is currently in heavy development, look for the first
 [stable development version](http://hackage.haskell.org/packages/archive/tournament/0.0.1/)
-on hackage.
+on hackage very soon.
 
 ## Features
 

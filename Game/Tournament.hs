@@ -384,6 +384,11 @@ placementSort fg bf toPlacement = prependTop 1 (Just fg)
     excludeTop :: [(Position, Player)] -> [(Position, Player)]
     excludeTop = filter ((`notElem` pls) . fst)
 
+sumScores :: Games -> [(Player, Score)]
+sumScores = map (fst . head &&& foldr ((+) . snd) 0)
+  . groupBy ((==) `on` fst)
+  . sortBy (comparing fst)
+  . Map.foldr ((++) . gameZip) []
 
 makeResults :: Tournament -> Games -> Maybe Results
 makeResults (Tourney {rules = Duel e, size = np}) ms
@@ -421,7 +426,7 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
     scorify :: Game -> Results
     scorify f = map mergeLists placements where
       mergeLists (pl, pos) = Result { player = pl, placement = pos
-        , wins = extract wins, total = extract scoreSum } where
+        , wins = extract winsList, total = extract scoreSum } where
         extract = fromMaybe 0 . lookup pl
 
       -- all pipelines start with this. 0 should not exist, -1 => winner got further
@@ -434,14 +439,11 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
       lastBracketNotFinal k _ = round k < maxRnd && lastBracket (bracket k)
       lastBracket br = (e == Single && br == WB) || (e == Double && br == LB)
 
-      wins = map (head &&& length)
+      winsList = map (head &&& length)
         . group . sort
         . Map.foldr ((:) . winner) [] $ msnwo
 
-      scoreSum = map (fst . head &&& foldr ((+) . snd) 0)
-        . groupBy ((==) `on` fst)
-        . sortBy (comparing fst)
-        . Map.foldr ((++) . gameZip) [] $ msnwo
+      scoreSum = sumScores msnwo
 
 
 makeResults (Tourney {rules = FFA _ _, size = _}) ms
@@ -461,12 +463,13 @@ makeResults (Tourney {rules = FFA _ _, size = _}) ms
 
     scorify :: Int -> Game -> Results
     scorify maxRnd f = map mergeLists placements where
-      mergeLists (pl, pos) = Result { player = pl, placement = pos, wins = 0, total = 0 }
-      --TODO: wins and scoreSum
-      -- NB: WO markers or placeholders should NOT exist when this is called!      
+      -- NB: WO markers or placeholders should NOT exist when scorify called!
+      mergeLists (pl, pos) = Result { player = pl, placement = pos
+        , wins = extract winsList, total = extract scoreSum } where 
+        extract = fromMaybe 0 . lookup pl
 
       -- placements using common helper, having prefiltered final game(round)
-      placements = placementSort f Nothing toPlacement 
+      placements = placementSort f Nothing toPlacement
         . Map.filterWithKey (\k _ -> round k < maxRnd) $ ms
 
       -- maps a player's maxround to the tie-placement (called for r < maxRnd)
@@ -474,8 +477,13 @@ makeResults (Tourney {rules = FFA _ _, size = _}) ms
       toPlacement :: Int -> Position
       toPlacement maxrp = (1+) . fromJust . lookup (maxrp + 1) $ rsizes
 
-      -- scoreSum: identical to Duel case
-      -- wins: count matches where scores in the top rndAdv (overriding rndAdv to 1 in final)
+      scoreSum = sumScores ms
+
+      -- at the moment only count 1. places as wins
+      -- can count all advancements as wins by computing, but is it right?
+      winsList = map (head &&& length)
+        . group . sort
+        . Map.foldr ((:) . winner) [] $ ms
 
 
 playersReady :: GameId -> Tournament -> Maybe [Player]
@@ -536,10 +544,11 @@ scoreFFA gs adv gid@(GameId _ r _) scrs pls = do
   where
     -- make round (r+1) from the games in round r and the top n to take
     makeRnd :: [Game] -> Size -> Games
-    makeRnd gms = Map.fromList . nextGames . grpMap (seedAssoc True gms) . groups gs
+    makeRnd gms = Map.fromList . nextGames . grpMap (seedAssoc False gms) . groups gs
 
     -- This sorts all players by overall scores (to help pick best crossover candidates)
     -- Or, if !cond, sort normally by only including the winners from each game.
+    -- TODO: bug in here messing with manipFFA
     seedAssoc :: Bool -> [Game] -> [(Seed, Player)]
     seedAssoc takeAll rnd
       | takeAll   = seedify . concatMap gameZip $ rnd
@@ -672,11 +681,11 @@ testor Tourney { games = ms, results = rs } = do
 
 testcase :: IO ()
 testcase = do
-  let t = tournament (Duel Single) 8
-  testor $ execState (manipDuel (keys t)) t
+  --let t = tournament (Duel Single) 8
+  --testor $ execState (manipDuel (keys t)) t
   
-  --let t = tournament (FFA 4 1) 16
-  --testor $ execState manipFFA t
+  let t = tournament (FFA 4 1) 16
+  testor $ execState manipFFA t
 
 
 -- | Checks if a Tournament is valid
