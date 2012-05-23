@@ -66,7 +66,7 @@ module Game.Tournament (
    --, winner
    --, loser
 
-   --, testcase
+   , testcase
 ) where
 
 import Prelude hiding (round)
@@ -360,27 +360,52 @@ tournament rs@(Duel e) np
     ms = if e == Single then wb else wb `Map.union` lb
 
 
+-- | Helper to create the tie-correct Player -> Position association list.
+-- Requires a Round -> Position function to do the heavy lifting where possible,
+-- the final Game and Maybe bronzefinal to not take out
+-- the list of games prefiltered away non-final bracket and final games.
+placementSort :: Game -> Maybe Game -> (Int -> Position) -> Games -> [(Player, Position)]
+placementSort fg bf toPlacement = prependTop 1 (Just fg)
+  . prependTop (((+1) . length . players) fg) bf
+  . excludeTop
+  . sortBy (comparing snd)
+  . map (second toPlacement . (fst . head &&& foldr (max . snd) 1))
+  . groupBy ((==) `on` fst)
+  . sortBy (comparing fst)
+  . Map.foldrWithKey rfold []
+  where 
+    pls = if isJust bf then concatMap players [fg, fromJust bf] else players fg
+    rfold (GameId _ r _) m acc = (++ acc) . map (id &&& const r) $ players m
+
+    prependTop :: Int -> Maybe Game -> [(Position, Player)] -> [(Position, Player)]
+    prependTop strt g
+      | isJust g = (++) . flip zip [strt..] . map fst . gameSort . gameZip . fromJust $ g
+      | otherwise = id
+    excludeTop :: [(Position, Player)] -> [(Position, Player)]
+    excludeTop = filter ((`notElem` pls) . fst)
+
 
 makeResults :: Tournament -> Games -> Maybe Results
 makeResults (Tourney {rules = Duel e, size = np}) ms
   | e == Single
   , Just wbf@(Game _ (Just _)) <- Map.lookup (GameId WB p 1) ms -- final played
   -- bf lookup here if included!
-  = Just . scorify . winner $ wbf
+  = Just . scorify $ wbf
 
   | e == Double
   , Just gf1@(Game _ (Just gf1sc)) <- Map.lookup (GameId LB (2*p-1) 1) ms -- gf1 played
   , Just gf2@(Game _ gf2sc) <- Map.lookup (GameId LB (2*p) 1) ms  -- gf2 maybe played
   , isJust gf2sc || maximum gf1sc == head gf1sc -- gf2 played || gf1 conclusive
-  = Just . scorify . winner $ if isJust gf2sc then gf2 else gf1
+  = Just . scorify $ if isJust gf2sc then gf2 else gf1
 
   | otherwise = Nothing
 
   where
     p = pow np
+    maxRnd = if e == Single then p else 2*p-1
 
     -- maps (last bracket's) maxround to the tie-placement
-    toPlacement :: Elimination -> Int -> Int
+    toPlacement :: Elimination -> Int -> Position
     toPlacement Double maxlbr = if metric <= 4 then metric else 2^(k+1) + 1 + oddExtra where
       metric = 2*p + 1 - maxlbr
       r = metric - 4
@@ -393,8 +418,8 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
     -- scoring function assumes winner has been calculated so all that remains is:
     -- sort by maximum (last bracket's) round number descending, possibly flipping winners
     -- TODO: portions of this could possibly be used as a rules agnostic version
-    scorify :: Int -> Results
-    scorify w = map mergeLists placements where
+    scorify :: Game -> Results
+    scorify f = map mergeLists placements where
       mergeLists (pl, pos) = Result { player = pl, placement = pos
         , wins = extract wins, total = extract scoreSum } where
         extract = fromMaybe 0 . lookup pl
@@ -402,6 +427,12 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
       -- all pipelines start with this. 0 should not exist, -1 => winner got further
       -- scores not Just => should not have gotten this far by guard in score fn
       msnwo = Map.filter (all (>0) . players) ms
+
+      placements = placementSort f Nothing (toPlacement e) 
+        . Map.filterWithKey lastBracketNotFinal $ msnwo
+      
+      lastBracketNotFinal k _ = round k < maxRnd && lastBracket (bracket k)
+      lastBracket br = (e == Single && br == WB) || (e == Double && br == LB)
 
       wins = map (head &&& length)
         . group . sort
@@ -412,27 +443,10 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
         . sortBy (comparing fst)
         . Map.foldr ((++) . gameZip) [] $ msnwo
 
-      placements = fixFirst
-        . sortBy (comparing snd)
-        . map (second (toPlacement e) . (fst . head &&& foldr (max . snd) 1))
-        . groupBy ((==) `on` fst)
-        . sortBy (comparing fst)
-        . Map.foldrWithKey rfold [] $ msnwo
-
-      rfold (GameId br r _) m acc =
-        if (e == Single && br == WB) || (e == Double && br == LB)
-          then (++ acc) . map (id &&& const r) $ players m
-          else acc
-
-      -- reorder start and make sure 2nd element has second place, as toPlacement cant distinguish
-      fixFirst (x@(a,_):y@(b,_):rs) = if a == w then x : (b,2) : rs else y : (a,2) : rs
-      fixFirst _ = error "<2 players in Match sent to flipFirst"
-      -- TODO: if bronzeFinal then need to flip 3 and 4 possibly as well
-      --fixForth (x:y:c:d:ls)
 
 makeResults (Tourney {rules = FFA _ _, size = _}) ms
   | (GameId _ maxRnd _, f@(Game _ (Just _))) <- Map.findMax ms
-  = Just $ scorify f maxRnd
+  = Just $ scorify maxRnd f
 
   | otherwise = Nothing
   where
@@ -445,34 +459,20 @@ makeResults (Tourney {rules = FFA _ _, size = _}) ms
 
     rsizerf (GameId _ r _) (Game pls _) acc = (r, length pls) : acc
 
-    scorify :: Game -> Int -> Results
-    scorify f maxRnd = map mergeLists placements where
+    scorify :: Int -> Game -> Results
+    scorify maxRnd f = map mergeLists placements where
       mergeLists (pl, pos) = Result { player = pl, placement = pos, wins = 0, total = 0 }
       --TODO: wins and scoreSum
-      -- NB: WO markers or placeholders should NOT exist when this is called!
+      -- NB: WO markers or placeholders should NOT exist when this is called!      
 
-      -- basically the same as in duel, with new toPlacement and s/fixFirst/prependTop
-      -- can be generalized
-      placements = prependTop . excludeTop
-        . map (second (toPlacement) . (fst . head &&& foldr (max . snd) 1))
-        . groupBy ((==) `on` fst)
-        . sortBy (comparing fst)
-        . Map.foldrWithKey pfold [] $ ms
+      -- placements using common helper, having prefiltered final game(round)
+      placements = placementSort f Nothing toPlacement 
+        . Map.filterWithKey (\k _ -> round k < maxRnd) $ ms
 
-      pfold (GameId _ r _) m acc
-        | r < maxRnd = (++ acc) . map (id &&& const r) $ players m
-        | otherwise  = acc
-
-      prependTop, excludeTop :: [(Position, Player)] -> [(Position, Player)]
-      prependTop = (++) . flip zip [1..] . map fst . gameSort . gameZip $ f
-      excludeTop = filter ((`notElem` players f) . fst)
-
-      -- maps a player's maxround to the tie-placement
+      -- maps a player's maxround to the tie-placement (called for r < maxRnd)
+      -- simplistic at the moment :: 1 + number of people who got through to next round
       toPlacement :: Int -> Position
-      toPlacement maxrp
-        | maxrp == maxRnd = 1
-        | maxrp < maxRnd  = (1+) . fromJust . lookup (maxrp + 1) $ rsizes  -- 1 after next round's number
-        | otherwise = error "toPlacement called with bad round"
+      toPlacement maxrp = (1+) . fromJust . lookup (maxrp + 1) $ rsizes
 
       -- scoreSum: identical to Duel case
       -- wins: count matches where scores in the top rndAdv (overriding rndAdv to 1 in final)
@@ -672,12 +672,11 @@ testor Tourney { games = ms, results = rs } = do
 
 testcase :: IO ()
 testcase = do
-  {- duel case
-  let t = tournament (Duel Double) 8
+  let t = tournament (Duel Single) 8
   testor $ execState (manipDuel (keys t)) t
-  -}
-  let t = tournament (FFA 4 1) 16
-  testor $ execState manipFFA t
+  
+  --let t = tournament (FFA 4 1) 16
+  --testor $ execState manipFFA t
 
 
 -- | Checks if a Tournament is valid
