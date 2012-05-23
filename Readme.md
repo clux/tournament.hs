@@ -1,8 +1,10 @@
 #Tournament.hs ![travis build status](https://secure.travis-ci.org/clux/tournament.hs.png)
 
-Tournament is a pure library whice generates tournanaments deals with scoring of matches and
-the propagation of winners internally.
-It is currently in heavy development and is not yet on hackage.
+Tournament is a pure library for generating tournanaments and handling match scoring and
+propagation of winners/losers internally.
+It is currently in heavy development, see the first
+[stable development version](http://hackage.haskell.org/packages/archive/tournament/0.0.1/)
+on hackage.
 
 ## Features
 
@@ -12,21 +14,11 @@ It is currently in heavy development and is not yet on hackage.
 - Group creation
 - Encapsulated scoring system.
 
-TODO:
-- properly encapsulate types, let access be in serializable form only? if so how?
-- decide on FFA style stuff
-- generate haddock output
-- fix tests again [only broken due to exhaustion of cases..]
-- release first version
-
-## Usage
-link to haddock output here
-
 ## Installation
 Install the Haskell platform, then
 
 ````bash
-$ cabal-dev install ???
+$ cabal-dev install tournament
 ````
 
 ## Running tests
@@ -44,4 +36,4 @@ $ cabal-dev configure --enable-tests && cabal-dev build && cabal-dev test
 ````
 
 ## License
-GPL3-Licensed. See LICENSE file for details.
+GPL3-Licensed for now. See LICENSE file for details.
