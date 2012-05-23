@@ -13,7 +13,7 @@ import Test.Framework (defaultMain, testGroup, plusTestOptions)
 import Test.Framework.Options
 import Test.Framework.Providers.QuickCheck2 (testProperty)
 
--- helper instances for positive short ints
+-- helper instances for positive small integers
 newtype RInt = RInt {rInt :: Int} deriving (Eq, Ord, Show, Num, Integral, Real, Enum)
 newtype SInt = SInt {sInt :: Int} deriving (Eq, Ord, Show, Num, Integral, Real, Enum)
 newtype PInt = PInt {pInt :: Int} deriving (Eq, Ord, Show, Num, Integral, Real, Enum)

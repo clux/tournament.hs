@@ -9,14 +9,13 @@
 --
 -- Tournament construction and maintenance including competition based structures and helpers.
 --
--- For simple uses of the the basic building blocks, qualified or partial imports is recommended.
--- However, due to the large number of simple types needed to operate the main tournament
--- machinery, a raw import into a dedicated outside-world interfacing helper file is recommended.
+-- This library is intended to be imported qualified as it exports functions that clash with
+-- Prelude.
 --
--- > import Game.Tournament
+-- > import Game.Tournament as T
 --
--- The Tournament structure contain a Map of 'MatchId' -> 'Match' for its internal
--- representation and the 'MatchId' keys are the location in the Tournament.
+-- The Tournament structure contain a Map of 'GameId' -> 'Game' for its internal
+-- representation and the 'GameId' keys are the location in the Tournament.
 
 -- TODO: This structure is meant to encapsulate this structure to ensure internal consistency,
 -- but hopefully in such a way it can be safely serialized to DBs.
@@ -36,10 +35,10 @@ module Game.Tournament (
    , Elimination(..)
    , Bracket(..)
    , Rules(..)
-   , Results -- no constructor
+   , Results -- type synonym
    , results
 
-   , Result  -- no constructor
+   , Result  -- no constructor, but accessors:
    , player
    , placement
    , wins
@@ -67,7 +66,7 @@ module Game.Tournament (
    --, winner
    --, loser
 
-   , testcase
+   --, testcase
 ) where
 
 import Prelude hiding (round)
@@ -235,7 +234,6 @@ gameSort = reverse . sortBy (comparing snd)
 --
 -- If this is called on an unscored match a (finite) list zeroes is returned.
 -- This is consistent with the internal representation of placeholders in Matches.
--- TODO: could also use gameZip?
 scores :: Game -> [Player]
 scores g@(Game pls msc)
   | Just _ <- msc = map fst . gameSort . gameZip $ g
@@ -249,6 +247,7 @@ loser = last . scores
 -- Duel specific helper
 pow :: Int -> Int
 pow = ceiling . logBase 2 . fromIntegral
+
 
 -- | Count the number of rounds in a given bracket in a Tournament.
 count :: Tournament -> Bracket -> Int
@@ -432,24 +431,57 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
       --fixForth (x:y:c:d:ls)
 
 makeResults (Tourney {rules = FFA _ _, size = _}) ms
-  | (_, f@(Game _ (Just _))) <- Map.findMax ms
-  = Just scorify
+  | (GameId _ maxRnd _, f@(Game _ (Just _))) <- Map.findMax ms
+  = Just $ scorify f maxRnd
 
   | otherwise = Nothing
   where
-    scorify :: Results
-    scorify = [Result 0 0 0 0]
 
--- TODO: should also check that we're not scoring past matches!
+    -- rsizes :: [(RoundNr, NumPlayers)] lookup helper
+    rsizes = map (fst . head &&& foldr ((+) . snd) 0)
+      . groupBy ((==) `on` fst)
+      . sortBy (comparing fst)
+      . Map.foldrWithKey rsizerf [] $ ms
+
+    rsizerf (GameId _ r _) (Game pls _) acc = (r, length pls) : acc
+
+    scorify :: Game -> Int -> Results
+    scorify f maxRnd = map mergeLists placements where
+      mergeLists (pl, pos) = Result { player = pl, placement = pos, wins = 0, total = 0 }
+      --TODO: wins and scoreSum
+      -- NB: WO markers or placeholders should NOT exist when this is called!
+
+      -- basically the same as in duel, with new toPlacement and s/fixFirst/prependTop
+      -- can be generalized
+      placements = prependTop . excludeTop
+        . map (second (toPlacement) . (fst . head &&& foldr (max . snd) 1))
+        . groupBy ((==) `on` fst)
+        . sortBy (comparing fst)
+        . Map.foldrWithKey pfold [] $ ms
+
+      pfold (GameId _ r _) m acc
+        | r < maxRnd = (++ acc) . map (id &&& const r) $ players m
+        | otherwise  = acc
+
+      prependTop, excludeTop :: [(Position, Player)] -> [(Position, Player)]
+      prependTop = (++) . flip zip [1..] . map fst . gameSort . gameZip $ f
+      excludeTop = filter ((`notElem` players f) . fst)
+
+      -- maps a player's maxround to the tie-placement
+      toPlacement :: Int -> Position
+      toPlacement maxrp
+        | maxrp == maxRnd = 1
+        | maxrp < maxRnd  = (1+) . fromJust . lookup (maxrp + 1) $ rsizes  -- 1 after next round's number
+        | otherwise = error "toPlacement called with bad round"
+
+      -- scoreSum: identical to Duel case
+      -- wins: count matches where scores in the top rndAdv (overriding rndAdv to 1 in final)
+
+
 playersReady :: GameId -> Tournament -> Maybe [Player]
-playersReady gid (Tourney { rules = r, games = ms})
-  | Duel _ <- r
-  , Just (Game pls _) <- Map.lookup gid ms
+playersReady gid t
+  | Just (Game pls _) <- Map.lookup gid $ games t
   , all (>0) pls
-  = Just pls
-  | FFA _ _ <- r
-  , Just (Game pls _) <- Map.lookup gid ms
-  , any (>0) pls
   = Just pls
   | otherwise = Nothing
 
@@ -461,6 +493,9 @@ scorable gid = isJust . playersReady gid
 -- If match is not 'scorable', the Tournament will pass through unchanged.
 -- TODO: make a strict version of this
 -- TODO: documentation absorb the individual functions? either copy it all here, or have it internal-exposed
+-- Currently no limitation on re-scoring old matches, we allow it for tweaking score functionality
+-- but it can cause inconsistencies. It is left up to upper layer to ensure consistency if using this.
+-- TODO: maybe make a helper function to let them decide whether or not they may make it inconsistent.
 score :: GameId -> [Score] -> Tournament -> Tournament
 score gid sc trn@(Tourney { rules = r, size = np, games = ms })
   | Duel e <- r
@@ -470,18 +505,19 @@ score gid sc trn@(Tourney { rules = r, size = np, games = ms })
         rsUpd = makeResults trn msUpd
     in trn { games = msUpd, results = rsUpd }
 
-  | FFA s _ <- r
+  | FFA s adv <- r
   , Just pls <- playersReady gid trn
   , length sc == length pls
-  = let msUpd = execState (scoreFFA s gid sc pls) ms
-    in trn { games = msUpd }
+  = let msUpd = execState (scoreFFA s adv gid sc pls) ms
+        rsUpd = makeResults trn msUpd
+    in trn { games = msUpd, results = rsUpd }
 
   -- somewhat less ideally, if length sc /= length pls this now also fails silently even if socable passes
   | otherwise = trn
 
 
-scoreFFA :: GroupSize -> GameId -> [Score] -> [Player] -> State Games ()
-scoreFFA gs gid@(GameId _ r _) scrs pls = do
+scoreFFA :: GroupSize -> Advancers -> GameId -> [Score] -> [Player] -> State Games ()
+scoreFFA gs adv gid@(GameId _ r _) scrs pls = do
   -- 1. score given game
   let m = Game pls $ Just scrs
   modify $ Map.adjust (const m) gid
@@ -500,10 +536,21 @@ scoreFFA gs gid@(GameId _ r _) scrs pls = do
   where
     -- make round (r+1) from the games in round r and the top n to take
     makeRnd :: [Game] -> Size -> Games
-    makeRnd gms = Map.fromList . nextGames . grpMap (seedToPlayer gms) . groups gs
+    makeRnd gms = Map.fromList . nextGames . grpMap (seedAssoc True gms) . groups gs
 
-    seedToPlayer :: [Game] -> [(Seed, Player)]
-    seedToPlayer = zip [1..] . map fst . gameSort . concatMap gameZip
+    -- This sorts all players by overall scores (to help pick best crossover candidates)
+    -- Or, if !cond, sort normally by only including the winners from each game.
+    seedAssoc :: Bool -> [Game] -> [(Seed, Player)]
+    seedAssoc takeAll rnd
+      | takeAll   = seedify . concatMap gameZip $ rnd
+      | otherwise = seedify . concatMap (take (rndAdv rnd) . gameZip) $ rnd
+        where
+          -- Find out how many to keep from each round before sorting overall
+          rndAdv :: [Game] -> Advancers
+          rndAdv = max 1 . (adv - gs +) . minimum . map (length . players)
+
+          seedify :: [(Player, Score)] -> [(Seed, Player)]
+          seedify = zip [1..] . map fst . gameSort
 
     grpMap :: [(Seed, Player)] -> [[Seed]] -> [[Player]]
     grpMap assoc = map . map $ fromJust . flip lookup assoc
@@ -607,7 +654,16 @@ upd sc id = do
   return ()
 
 manipDuel :: [GameId] -> State Tournament ()
-manipDuel keys = mapM_ (upd [1,0]) keys
+manipDuel = mapM_ (upd [1,0])
+
+manipFFA :: State Tournament ()
+manipFFA = do
+  upd [4,3,2,1] $ GameId WB 1 1
+  upd [5,3,2,1] $ GameId WB 1 2
+  upd [2,3,2,1] $ GameId WB 1 3
+  upd [6,3,2,1] $ GameId WB 1 4
+
+  upd [1,2,3,4] $ GameId WB 2 1
 
 testor :: Tournament -> IO ()
 testor Tourney { games = ms, results = rs } = do
@@ -616,8 +672,13 @@ testor Tourney { games = ms, results = rs } = do
 
 testcase :: IO ()
 testcase = do
+  {- duel case
   let t = tournament (Duel Double) 8
   testor $ execState (manipDuel (keys t)) t
+  -}
+  let t = tournament (FFA 4 1) 16
+  testor $ execState manipFFA t
+
 
 -- | Checks if a Tournament is valid
 {-
