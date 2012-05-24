@@ -72,7 +72,7 @@ module Game.Tournament (
 import Prelude hiding (round)
 import Numeric (showIntAtBase, readInt)
 import Data.Char (intToDigit, digitToInt)
-import Data.List (sort, sortBy, group, groupBy, genericTake)
+import Data.List (sort, sortBy, group, groupBy, genericTake, zipWith4)
 import Data.Ord (comparing)
 import Data.Function (on)
 import Data.Bits (shiftL)
@@ -364,16 +364,17 @@ tournament rs@(Duel e) np
 -- Requires a Round -> Position function to do the heavy lifting where possible,
 -- the final Game and Maybe bronzefinal to not take out
 -- the list of games prefiltered away non-final bracket and final games.
-placementSort :: Game -> Maybe Game -> (Int -> Position) -> Games -> [(Player, Position)]
-placementSort fg bf toPlacement = prependTop 1 (Just fg)
+-- result zips with Player == [1..]
+placementSort :: Game -> Maybe Game -> (Int -> Position) -> Games -> [Position]
+placementSort fg bf toPlacement = map snd . sortBy (comparing fst)
+  . prependTop 1 (Just fg)
   . prependTop (((+1) . length . players) fg) bf
   . excludeTop
-  . sortBy (comparing snd)
   . map (second toPlacement . (fst . head &&& foldr (max . snd) 1))
   . groupBy ((==) `on` fst)
   . sortBy (comparing fst)
   . Map.foldrWithKey rfold []
-  where 
+  where
     pls = if isJust bf then concatMap players [fg, fromJust bf] else players fg
     rfold (GameId _ r _) m acc = (++ acc) . map (id &&& const r) $ players m
 
@@ -384,11 +385,21 @@ placementSort fg bf toPlacement = prependTop 1 (Just fg)
     excludeTop :: [(Position, Player)] -> [(Position, Player)]
     excludeTop = filter ((`notElem` pls) . fst)
 
-sumScores :: Games -> [(Player, Score)]
-sumScores = map (fst . head &&& foldr ((+) . snd) 0)
+-- zips with Player == [1..]
+sumScores :: Games -> [Score]
+sumScores = map (foldr ((+) . snd) 0)
   . groupBy ((==) `on` fst)
   . sortBy (comparing fst)
   . Map.foldr ((++) . gameZip) []
+
+-- zips with Player == [1..]
+getWins :: Int -> Games -> [Int]
+getWins np = map (subtract 1 . length) -- started out with one of each so we can count zeroes
+  . group . sort
+  . Map.foldr ((:) . winner) [1..np]
+
+zipResults :: [Int] -> [Int] -> [Int] -> [Result]
+zipResults a b = sortBy (comparing placement) . zipWith4 Result [1..] a b
 
 makeResults :: Tournament -> Games -> Maybe Results
 makeResults (Tourney {rules = Duel e, size = np}) ms
@@ -424,66 +435,44 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
     -- sort by maximum (last bracket's) round number descending, possibly flipping winners
     -- TODO: portions of this could possibly be used as a rules agnostic version
     scorify :: Game -> Results
-    scorify f = map mergeLists placements where
-      mergeLists (pl, pos) = Result { player = pl, placement = pos
-        , wins = extract winsList, total = extract scoreSum } where
-        extract = fromMaybe 0 . lookup pl
-
+    scorify f = zipResults placements (getWins np ms) (sumScores msnwo) where
       -- all pipelines start with this. 0 should not exist, -1 => winner got further
       -- scores not Just => should not have gotten this far by guard in score fn
       msnwo = Map.filter (all (>0) . players) ms
 
-      placements = placementSort f Nothing (toPlacement e) 
+      placements = placementSort f Nothing (toPlacement e)
         . Map.filterWithKey lastBracketNotFinal $ msnwo
-      
+
       lastBracketNotFinal k _ = round k < maxRnd && lastBracket (bracket k)
       lastBracket br = (e == Single && br == WB) || (e == Double && br == LB)
 
-      winsList = map (head &&& length)
-        . group . sort
-        . Map.foldr ((:) . winner) [] $ msnwo
 
-      scoreSum = sumScores msnwo
-
-
-makeResults (Tourney {rules = FFA _ _, size = _}) ms
+makeResults (Tourney {rules = FFA _ _, size = np}) ms
   | (GameId _ maxRnd _, f@(Game _ (Just _))) <- Map.findMax ms
   = Just $ scorify maxRnd f
 
   | otherwise = Nothing
   where
-
     -- rsizes :: [(RoundNr, NumPlayers)] lookup helper
     rsizes = map (fst . head &&& foldr ((+) . snd) 0)
       . groupBy ((==) `on` fst)
       . sortBy (comparing fst)
       . Map.foldrWithKey rsizerf [] $ ms
-
-    rsizerf (GameId _ r _) (Game pls _) acc = (r, length pls) : acc
+      where
+        rsizerf gid g acc = (round gid, (length . players) g) : acc
 
     scorify :: Int -> Game -> Results
-    scorify maxRnd f = map mergeLists placements where
+    scorify maxRnd f = zipResults placements (getWins np ms) (sumScores ms) where
       -- NB: WO markers or placeholders should NOT exist when scorify called!
-      mergeLists (pl, pos) = Result { player = pl, placement = pos
-        , wins = extract winsList, total = extract scoreSum } where 
-        extract = fromMaybe 0 . lookup pl
 
       -- placements using common helper, having prefiltered final game(round)
       placements = placementSort f Nothing toPlacement
         . Map.filterWithKey (\k _ -> round k < maxRnd) $ ms
 
       -- maps a player's maxround to the tie-placement (called for r < maxRnd)
-      -- simplistic at the moment :: 1 + number of people who got through to next round
+      -- simplistic :: 1 + number of people who got through to next round
       toPlacement :: Int -> Position
       toPlacement maxrp = (1+) . fromJust . lookup (maxrp + 1) $ rsizes
-
-      scoreSum = sumScores ms
-
-      -- at the moment only count 1. places as wins
-      -- can count all advancements as wins by computing, but is it right?
-      winsList = map (head &&& length)
-        . group . sort
-        . Map.foldr ((:) . winner) [] $ ms
 
 
 playersReady :: GameId -> Tournament -> Maybe [Player]
@@ -548,11 +537,10 @@ scoreFFA gs adv gid@(GameId _ r _) scrs pls = do
 
     -- This sorts all players by overall scores (to help pick best crossover candidates)
     -- Or, if !cond, sort normally by only including the winners from each game.
-    -- TODO: bug in here messing with manipFFA
     seedAssoc :: Bool -> [Game] -> [(Seed, Player)]
     seedAssoc takeAll rnd
       | takeAll   = seedify . concatMap gameZip $ rnd
-      | otherwise = seedify . concatMap (take (rndAdv rnd) . gameZip) $ rnd
+      | otherwise = seedify . concatMap (take (rndAdv rnd) . gameSort . gameZip) $ rnd
         where
           -- Find out how many to keep from each round before sorting overall
           rndAdv :: [Game] -> Advancers
@@ -667,9 +655,9 @@ manipDuel = mapM_ (upd [1,0])
 
 manipFFA :: State Tournament ()
 manipFFA = do
-  upd [4,3,2,1] $ GameId WB 1 1
+  upd [1,2,3,4] $ GameId WB 1 1
   upd [5,3,2,1] $ GameId WB 1 2
-  upd [2,3,2,1] $ GameId WB 1 3
+  upd [2,4,2,1] $ GameId WB 1 3
   upd [6,3,2,1] $ GameId WB 1 4
 
   upd [1,2,3,4] $ GameId WB 2 1
@@ -681,11 +669,11 @@ testor Tourney { games = ms, results = rs } = do
 
 testcase :: IO ()
 testcase = do
-  --let t = tournament (Duel Single) 8
-  --testor $ execState (manipDuel (keys t)) t
-  
-  let t = tournament (FFA 4 1) 16
-  testor $ execState manipFFA t
+  let t = tournament (Duel Double) 8
+  testor $ execState (manipDuel (keys t)) t
+
+  --let t = tournament (FFA 4 1) 16
+  --testor $ execState manipFFA t
 
 
 -- | Checks if a Tournament is valid
