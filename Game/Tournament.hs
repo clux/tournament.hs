@@ -431,9 +431,6 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
       metric = p+1 - maxr
       r = metric - 1
 
-    -- scoring function assumes winner has been calculated so all that remains is:
-    -- sort by maximum (last bracket's) round number descending, possibly flipping winners
-    -- TODO: portions of this could possibly be used as a rules agnostic version
     scorify :: Game -> Results
     scorify f = zipResults placements (getWins np ms) (sumScores msnwo) where
       -- all pipelines start with this. 0 should not exist, -1 => winner got further
@@ -453,13 +450,18 @@ makeResults (Tourney {rules = FFA _ _, size = np}) ms
 
   | otherwise = Nothing
   where
-    -- rsizes :: [(RoundNr, NumPlayers)] lookup helper
+    -- rsizes :: [(RoundNr, NumPlayers)] lookup helper for toPlacement
     rsizes = map (fst . head &&& foldr ((+) . snd) 0)
       . groupBy ((==) `on` fst)
       . sortBy (comparing fst)
       . Map.foldrWithKey rsizerf [] $ ms
       where
         rsizerf gid g acc = (round gid, (length . players) g) : acc
+
+    -- maps a player's maxround to the tie-placement (called for r < maxRnd)
+    -- simplistic :: 1 + number of people who got through to next round
+    toPlacement :: Int -> Position
+    toPlacement maxrp = (1+) . fromJust . lookup (maxrp + 1) $ rsizes
 
     scorify :: Int -> Game -> Results
     scorify maxRnd f = zipResults placements (getWins np ms) (sumScores ms) where
@@ -468,11 +470,6 @@ makeResults (Tourney {rules = FFA _ _, size = np}) ms
       -- placements using common helper, having prefiltered final game(round)
       placements = placementSort f Nothing toPlacement
         . Map.filterWithKey (\k _ -> round k < maxRnd) $ ms
-
-      -- maps a player's maxround to the tie-placement (called for r < maxRnd)
-      -- simplistic :: 1 + number of people who got through to next round
-      toPlacement :: Int -> Position
-      toPlacement maxrp = (1+) . fromJust . lookup (maxrp + 1) $ rsizes
 
 
 playersReady :: GameId -> Tournament -> Maybe [Player]
@@ -486,13 +483,32 @@ playersReady gid t
 scorable :: GameId -> Tournament -> Bool
 scorable gid = isJust . playersReady gid
 
+-- | Checks if a GameId is 'scorable' and it will not propagate to an already scored Game.
+-- Guarding Tournament updates with this ensures it is never in an inconsistent state.
+-- TODO: really needs access to mRight, mDown (if duel) to ensure they exist
+-- TODO: if FFA only allow scoring if NO matches in the next round have been scored
+safeScorable :: GameId -> Tournament -> Bool
+safeScorable = undefined
+
 -- | Score a match in a tournament and propagate winners/losers.
 -- If match is not 'scorable', the Tournament will pass through unchanged.
--- TODO: make a strict version of this
--- TODO: documentation absorb the individual functions? either copy it all here, or have it internal-exposed
--- Currently no limitation on re-scoring old matches, we allow it for tweaking score functionality
--- but it can cause inconsistencies. It is left up to upper layer to ensure consistency if using this.
--- TODO: maybe make a helper function to let them decide whether or not they may make it inconsistent.
+--
+-- For a Duel tournament, winners (and losers if Double) are propagated immediately,
+-- wheras FFA tournaments calculate winners at the end of the round (when all games played).
+--
+-- There is no limitation on re-scoring old games, so care must be taken to not update too far
+-- back ones and leaving the tournament in an inconsistent state. When scoring games more than one
+-- round behind the corresponding active round, the locations to which these propagate must
+-- be updated manually.
+--
+-- To prevent yourself from never scoring older matches, only score games for which
+-- 'safeScorable' returns True. Though this has not been implemented yet.
+--
+-- > gid = (GameId WB 2 1)
+-- > tUpdated = if safeScorable gid then score gid [1,0] t else t
+--
+-- TODO: strictify this function
+-- TODO: better to do a scoreSafe? // call this scoreUnsafe
 score :: GameId -> [Score] -> Tournament -> Tournament
 score gid sc trn@(Tourney { rules = r, size = np, games = ms })
   | Duel e <- r
@@ -536,7 +552,7 @@ scoreFFA gs adv gid@(GameId _ r _) scrs pls = do
     makeRnd gms = Map.fromList . nextGames . grpMap (seedAssoc False gms) . groups gs
 
     -- This sorts all players by overall scores (to help pick best crossover candidates)
-    -- Or, if !cond, sort normally by only including the winners from each game.
+    -- Or, if !takeAll, sort normally by only including the advancers from each game.
     seedAssoc :: Bool -> [Game] -> [(Seed, Player)]
     seedAssoc takeAll rnd
       | takeAll   = seedify . concatMap gameZip $ rnd
@@ -555,10 +571,6 @@ scoreFFA gs adv gid@(GameId _ r _) scrs pls = do
     nextGames :: [[Player]] -> [(GameId, Game)]
     nextGames = zipWith (\i g -> (GameId WB (r+1) i, Game g Nothing)) [1..]
 
-
--- | Update the scores of a duel in an elimination tournament.
--- Returns an updated tournament with the winner propagated to the next round,
--- and the loser propagated to the loser bracket if applicable.
 scoreDuel :: Int -> Elimination -> GameId -> [Score] -> [Player] -> State Games (Maybe Game)
 scoreDuel p e gid scrs pls = do
   -- 1. score given game
