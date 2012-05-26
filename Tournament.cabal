@@ -4,8 +4,8 @@ Synopsis      : Tournament related algorithms
 Homepage      : http://github.com/clux/tournament.hs
 Description   :
 
-  Tournament is a pure library which generates tournaments, groups
-  and rounds of various forms using a variety of different rulesets.
+  Tournament is a pure library which generates and updates competition
+  based structures that represent basic FFA or Duel tournaments.
 
 License       : GPL-3
 License-file  : LICENSE
@@ -44,6 +44,7 @@ Test-Suite test-tournament
   other-modules     : Game.Tournament
   build-depends     :
         base                        == 4.*
+      , mtl                         == 2.0.*
       , QuickCheck                  == 2.4.*
       , test-framework-quickcheck2  == 0.2.*
       , test-framework              == 0.6.*
