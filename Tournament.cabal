@@ -7,7 +7,7 @@ Description   :
   Tournament is a pure library which generates and updates competition
   based structures that represent basic FFA or Duel tournaments.
 
-License       : GPL-3
+License       : MIT
 License-file  : LICENSE
 Author        : Eirik <clux> Albrigtsen
 Copyright     : 2012, Eirik Albrigtsen

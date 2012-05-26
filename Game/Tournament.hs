@@ -3,7 +3,7 @@
 -- |
 -- Module      :  Game.Tournament
 -- Copyright   :  (c) Eirik Albrigtsen 2012
--- License     :  GPL-style
+-- License     :  MIT
 -- Maintainer  :  Eirik <clux> Albrigtsen
 -- Stability   :  unstable
 --
