@@ -16,7 +16,7 @@ Category      : Game
 Bug-reports   : http://github.com/clux/tournament.hs/issues
 
 Build-type    : Simple
-Stability     : experimental
+Stability     : Unstable
 tested-with   : GHC == 7.0.4
 Cabal-version : >= 1.10
 
