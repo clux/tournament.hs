@@ -2,9 +2,9 @@
 
 Tournament is a pure library for generating tournanaments and handling match scoring and
 propagation of winners/losers internally.
-It is currently in heavy development, look for the first
-[stable development version](http://hackage.haskell.org/packages/archive/tournament/0.0.1/)
-on hackage very soon.
+It is currently under development, but a
+[preliminary version](http://hackage.haskell.org/packages/archive/tournament/0.0.1/)
+is available on hackage.
 
 ## Features
 
@@ -18,7 +18,7 @@ on hackage very soon.
 Install the Haskell platform, then
 
 ````bash
-$ cabal-dev install tournament
+$ cabal-dev update && cabal-dev install tournament
 ````
 
 ## Running tests
@@ -36,4 +36,4 @@ $ cabal-dev configure --enable-tests && cabal-dev build && cabal-dev test
 ````
 
 ## License
-GPL3-Licensed for now. See LICENSE file for details.
+MIT-Licensed. See LICENSE file for details.
