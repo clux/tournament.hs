@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards, BangPatterns #-}
+{-# LANGUAGE PatternGuards #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Game.Tournament
@@ -16,6 +16,18 @@
 --
 -- The Tournament structure contain a Map of 'GameId' -> 'Game' for its internal
 -- representation and the 'GameId' keys are the location in the Tournament.
+--
+-- Duel tournaments are based on the theory from <http://clux.org/entries/view/2407>.
+-- By using the seeding definitions listed there, there is almost only one way to
+-- generate a tournament, and the ambivalence appears only in Double elimination.
+--
+-- We have additionally chosen that brackets should converge by having the losers bracket move upwards.
+-- This is not necessary, but improves the visual layout when presented in a standard way.
+--
+-- FFA tournaments use a collection of sensible assumptions on how to
+-- optimally split n people into s groups while minimizing the sum of seeds difference
+-- between groups for fairness. At the end of each round, groups are recalculated from the scores
+-- of the winners, and new groups are created for the next round.
 
 -- TODO: This structure is meant to encapsulate this structure to ensure internal consistency,
 -- but hopefully in such a way it can be safely serialized to DBs.
@@ -48,6 +60,9 @@ module Game.Tournament (
 
    , Tournament -- no constructor
    , Score
+
+   , GroupSize
+   , Advancers
 
    --, Game(..)
    --, Player
@@ -87,11 +102,25 @@ import Control.Monad.State (State, get, put, modify, execState, gets)
 
 -- -----------------------------------------------------------------------------
 -- TODO should somehow ensure 0 < i <= 2^(p-1) in the next fn
--- | Duel tournaments is based on the theory from <http://clux.org/entries/view/2407>
+
+-- | Power of a tournament.
+-- It's defined as 2^num_players rounded up to nearest power of 2.
+--type Power = Int
+
+--type GameNumber = Int
+-- TODO: use int synonyms more liberally?
+
 
 -- | Computes both the upper and lower player seeds for a duel elimiation match.
--- The first argument, p, is the power of the tournament; 2^num_players rounding up to nearest power of 2
--- and the second, i, is the match number. Well-defined for p > 0 and 0 < i <= 2^(p-1).
+-- The first argument is the power of the tournament:
+--
+-- p :: 2^num_players rounding up to nearest power of 2
+--
+-- The second parameter is the game number i (in round one).
+--
+-- The pair (p,i) must obey
+--
+-- >p > 0 && 0 < i <= 2^(p-1).
 seeds :: Int -> Int -> (Int, Int)
 seeds p i
   | p > 0, i > 0, i <= 2^(p-1) = (1 - lastSeed + 2^p, lastSeed)
@@ -250,6 +279,7 @@ pow = ceiling . logBase 2 . fromIntegral
 
 
 -- | Count the number of rounds in a given bracket in a Tournament.
+-- TODO: rename to length once it has been less awkwardly moved into an internal part
 count :: Tournament -> Bracket -> Int
 count Tourney { rules = Duel Single, size = np } br = if br == WB then pow np else 0 -- 1 with bronze
 count Tourney { rules = Duel Double, size = np } br = (if br == WB then 1 else 2) * pow np

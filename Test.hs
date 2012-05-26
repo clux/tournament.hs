@@ -110,7 +110,7 @@ duelScorable isLeft e p' = cond1 && cond2 where
   cond1 = isJust . T.results $ t
   cond2 = length r == 2^p
   r = fromJust . T.results $ t
-  t = execState (manipDuel isLeft (T.keys blank)) $ blank
+  t = execState (manipDuel isLeft (T.keys blank)) blank
   blank = T.tournament (Duel e) (2^p)
   p = fromIntegral p'
 
@@ -120,7 +120,7 @@ duelWoScorable isLeft e p' = cond1 && cond2 where
   cond1 = isJust . T.results $ t
   cond2 = length r == np
   r = fromJust . T.results $ t
-  t = execState (manipDuel isLeft (T.keys blank)) $ blank
+  t = execState (manipDuel isLeft (T.keys blank)) blank
   blank = T.tournament (Duel e) np
   np = 2^(p-1) + 1  -- but we still only have one more player than 2^p'
   p = 1 + fromIntegral p' -- ensuring power is round up

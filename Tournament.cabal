@@ -45,6 +45,7 @@ Test-Suite test-tournament
   build-depends     :
         base                        == 4.*
       , mtl                         == 2.0.*
+      , containers                  == 0.5.*
       , QuickCheck                  == 2.4.*
       , test-framework-quickcheck2  == 0.2.*
       , test-framework              == 0.6.*
