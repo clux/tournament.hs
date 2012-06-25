@@ -1,10 +1,8 @@
-#Tournament.hs ![travis build status](https://secure.travis-ci.org/clux/tournament.hs.png)
+# Tournament.hs [![Build Status](https://secure.travis-ci.org/clux/tournament.hs.png)](http://travis-ci.org/clux/tournament.hs)
 
 Tournament is a pure library for generating tournanaments and handling match scoring and
-propagation of winners/losers internally.
-It is currently under development, but a
-[preliminary version](http://hackage.haskell.org/packages/archive/tournament/0.0.1/)
-is available on hackage.
+propagation of winners/losers internally. It is currently under development, but a preliminary version
+is [available on hackage](http://hackage.haskell.org/package/Tournament).
 
 ## Features
 

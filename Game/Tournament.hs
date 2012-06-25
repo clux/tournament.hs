@@ -474,6 +474,8 @@ makeResults (Tourney {rules = Duel e, size = np}) ms
       lastBracket br = (e == Single && br == WB) || (e == Double && br == LB)
 
 
+
+
 makeResults (Tourney {rules = FFA _ _, size = np}) ms
   | (GameId _ maxRnd _, f@(Game _ (Just _))) <- Map.findMax ms
   = Just $ scorify maxRnd f
@@ -711,11 +713,11 @@ testor Tourney { games = ms, results = rs } = do
 
 testcase :: IO ()
 testcase = do
-  let t = tournament (Duel Double) 8
-  testor $ execState (manipDuel (keys t)) t
+  --let t = tournament (Duel Double) 8
+  --testor $ execState (manipDuel (keys t)) t
 
-  --let t = tournament (FFA 4 1) 16
-  --testor $ execState manipFFA t
+  let t = tournament (FFA 4 1) 16
+  testor $ execState manipFFA t
 
 
 -- | Checks if a Tournament is valid
