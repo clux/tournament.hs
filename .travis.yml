@@ -2,4 +2,7 @@ language: haskell
 
 install:
   - cabal update
+  - cabal install test-framework
+  - cabal install test-framework-hunit
+  - cabal install test-framework-quickcheck2
   - cabal install --enable-tests
